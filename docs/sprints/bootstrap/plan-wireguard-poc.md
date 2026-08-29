@@ -63,12 +63,17 @@ unvalidated design.
       external frameworks per CLAUDE.md conventions.
 - [ ] `server` and `client` subcommands (stdlib `flag`/`os.Args`
       dispatch, not a CLI framework — this is a two-subcommand tool).
+- [ ] `--instance <N>` flag (default `0`, `--instance=0` explicitly
+      identical to omitting the flag — not a special case), per
+      `docs/arch/wireguard.md`'s uniform instance-numbering formula.
+      Drives the config path (`.../<N>.json`), the default
+      `interface_name` (`wganchor<N>`), and the default `listen_port`
+      (`60217 + N`) — pure computation, no live tunnel or second VPS
+      needed to write or test it.
 - [ ] Config file loading: JSON, using the layered lookup order from
       `docs/arch/config-and-lifecycle.md` (`--config` flag →
-      `os.UserConfigDir()/wganchor/0.json` → `/etc/wganchor/0.json`; `0`
-      because instance numbering is uniform from the start, not a
-      specially-named `config.json` — no `--instance` flag yet, so `0` is
-      the only path tried; no implicit cwd lookup — dev use passes
+      `os.UserConfigDir()/wganchor/<N>.json` → `/etc/wganchor/<N>.json`,
+      `N` from `--instance`; no implicit cwd lookup — dev use passes
       `--config` explicitly). Refuses to load a config file that isn't
       mode `0600`. Schema matches what `docs/arch/wireguard.md` specifies
       for keys, peer endpoint, and `relay_ips` (a list, even though this
@@ -97,3 +102,8 @@ unvalidated design.
 - [ ] `wganchor server` / `wganchor client` build as a single static
       binary (verified via `ldd`/`file`, not assumed), parse a config
       file, and run without error.
+- [ ] `--instance 1` (no config file present) computes a distinct config
+      path, default `interface_name`, and default `listen_port` from the
+      no-flag/`--instance 0` case, confirming the uniform numbering
+      formula actually holds in code — verified by inspection/printed
+      output, no second VPS or live tunnel required.

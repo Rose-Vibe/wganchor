@@ -42,10 +42,11 @@ Checked in this order, first match wins:
 
 `N` is the instance number, per `docs/arch/wireguard.md`'s multi-instance
 naming — `0` when no `--instance` flag is given, not a specially-named
-`config.json`. There's no `--instance` flag in the bootstrap sprint (see
-that doc), so today `N` is always `0` in practice, but the path the Go
-skeleton actually looks for is `.../0.json` from the start, exactly so it
-never needs renaming later.
+`config.json`. The `--instance <N>` flag itself is being built in the
+bootstrap sprint's Go skeleton (see that doc), so `N` already resolves via
+the real flag rather than being hardcoded to `0`; only one VPS is
+provisioned today, so `0` is the only instance actually exercised in
+practice.
 
 No implicit cwd lookup (no bare `./wganchor.json` default). This tool runs
 as root, and a root-run process that silently picks up whatever config
@@ -117,9 +118,14 @@ work, so the subcommand surface doesn't need reworking later.
   execution is a later hardening pass, not a blocker.
 - Live status/control socket: deferred, `wg show` already covers basic
   status independent of this tool.
-- Multiple independent tunnel instances (`--instance <N>` flag itself, and
-  the `install`/`uninstall` plumbing to manage more than one at once):
-  naming/path shape reserved in `docs/arch/wireguard.md` and above (the
-  config path, port, and systemd unit are already templated on `N`), only
-  the flag and multi-instance `install`/`uninstall` UX remain unbuilt. No
-  second VPS is in scope, so there's nothing to exercise this with yet.
+- Multiple independent tunnel instances: the `--instance <N>` flag itself
+  is being built now, in the bootstrap sprint (see
+  `docs/arch/wireguard.md`'s "Update: built now, not deferred" note) —
+  config path, default port, and default interface name all resolve
+  through it. What remains deferred to sprint 2 regardless is the
+  multi-instance `install`/`uninstall` UX and the templated systemd units
+  (see Lifecycle above), plus live, end-to-end validation of two
+  independent tunnels running at once, which needs a second, independent
+  VPS. The user has offered to provision one on request when
+  implementation actually reaches that validation point — ask then,
+  rather than assuming one is unavailable.

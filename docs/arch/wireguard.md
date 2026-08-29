@@ -70,7 +70,7 @@ or port can theoretically already be in use — but both clear the bar of
 "you'd have to deliberately pick the same unusual values to conflict,"
 rather than colliding with the common-case default setup.
 
-## Multiple interfaces: `wganchor0`, `wganchor1`, ... (naming reserved, not built)
+## Multiple interfaces: `wganchor0`, `wganchor1`, ...
 
 Numbering the interface (`wganchor0` implying a `wganchor1` is possible) is
 deliberate, but it's reserved for one specific scaling need, not "more
@@ -109,15 +109,24 @@ identical to omitting the flag:
   not a special flat unit name that would need replacing if a second
   instance shows up later.
 
-The `--instance` flag itself, and everything systemd/install-related, are
-still not being built in the bootstrap sprint — there's no second VPS in
-scope yet, and building unused multi-instance plumbing now is exactly the
-kind of speculative feature CLAUDE.md's conventions argue against. What
-*is* in scope now, because the bootstrap sprint's Go skeleton does load a
-config file: it must look for `/etc/wganchor/0.json` (and the XDG
-equivalent), not `config.json` — see `plan-wireguard-poc.md` — so the
-uniform formula is true from the very first line of config-loading code,
-not retrofitted when `--instance` is actually implemented.
+**Update: built now, not deferred.** The user has asked for real
+`--instance` support from the get-go rather than reserved-but-unbuilt
+naming, so the bootstrap sprint's Go skeleton implements the `--instance
+<N>` flag itself (default `0`), and uses it to compute the config path,
+default interface name, and default `listen_port` per the formula above.
+This is pure logic — no live tunnel, no second VPS needed to write or
+unit-test it, since the skeleton only parses config and no-ops either way.
+
+What still requires a second VPS, and is *not* happening in the bootstrap
+sprint regardless: `install`/`uninstall` and the templated systemd units
+are sprint 2 work independent of multi-instance (the bootstrap skeleton
+was never going to build those — see `config-and-lifecycle.md`), and
+*live, end-to-end validation of two independent tunnels running at once*
+needs an actual second, independent VPS to relay from. The user has
+offered to provision one on request — ask when implementation actually
+reaches that validation point (likely sprint 2, once real WireGuard
+automation and `install` exist), rather than assuming it's unavailable or
+skipping the test.
 
 ## Keys
 
@@ -207,11 +216,13 @@ specifically to make additive schema growth cheap.
       and not special-cased, overridable.
 - [x] Default listen port decided: `60217 + N` (not `51820`), persisted in
       config (not runtime-only), overridable.
-- [x] Multi-interface naming reserved (`wganchor0`, `wganchor1`, ...) for
+- [x] Multi-interface naming decided (`wganchor0`, `wganchor1`, ...) for
       independent tunnel relationships, as one uniform formula rather than
       a default plus a special case; multiple relay IPs on one tunnel use
-      `relay_ips` + peer `AllowedIPs` instead. `--instance` flag itself
-      not implemented — naming/path shape only, kept additive for later.
+      `relay_ips` + peer `AllowedIPs` instead. `--instance` flag being
+      built in the bootstrap skeleton (not deferred); live two-VPS
+      validation deferred until that point is reached (second VPS
+      available from the user on request).
 - [x] Config schema uses `relay_ips` (list), not a single `relay_ip`.
 - [x] Key generation approach decided: shell out to `wg genkey`/`wg pubkey`,
       self-provisioned on first run.
