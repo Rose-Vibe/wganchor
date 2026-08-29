@@ -88,7 +88,7 @@ since been assigned — see `plan-environment.md`).
 
 **Sprint complete, 2026-08-29.** All four criteria met — see
 `docs/arch/overview.md` (packet path, confirmed empirically) and
-`docs/sprints/bootstrap/plan-wireguard-poc.md` (PoC + Go skeleton
+`plan-wireguard-poc-COMPLETE.md` (PoC + Go skeleton
 checklists, both fully checked). Sprint 2 (real WireGuard automation:
 `install`/`uninstall`, systemd units, live two-VPS validation) can now be
 planned.

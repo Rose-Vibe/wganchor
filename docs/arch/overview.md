@@ -49,7 +49,7 @@ useful.
 
 ## Packet path (confirmed empirically via the manual PoC, 2026-08-29)
 
-Validated end-to-end by hand per `docs/sprints/bootstrap/plan-wireguard-poc.md`
+Validated end-to-end by hand per `docs/sprints/archive/2026-08-29-bootstrap/plan-wireguard-poc-COMPLETE.md`
 — inbound, outbound, idle/keepalive, and MTU all passed. Exact mechanism:
 
 - **VPS side**: `wg-quick`'s normal `AllowedIPs`-derived route handling is

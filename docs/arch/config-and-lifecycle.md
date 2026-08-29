@@ -1,7 +1,7 @@
 # Config, Keys, and Lifecycle
 
 Status: design decisions, not yet implemented. This governs the "Config
-file loading" step of `docs/sprints/bootstrap/plan-wireguard-poc.md`'s Go
+file loading" step of `docs/sprints/archive/2026-08-29-bootstrap/plan-wireguard-poc-COMPLETE.md`'s Go
 skeleton, and everything here is meant to be settled before that step
 starts, so the skeleton doesn't need reworking in sprint 2.
 
