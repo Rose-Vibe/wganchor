@@ -76,51 +76,63 @@ routing/firewall mechanism details now recorded in `docs/arch/overview.md`
 Only start this once the manual PoC succeeds — no point building on an
 unvalidated design.
 
-- [ ] `go.mod` for the module, single `main.go`-plus-packages layout, no
-      external frameworks per CLAUDE.md conventions.
-- [ ] `server` and `client` subcommands (stdlib `flag`/`os.Args`
+- [x] `go.mod` for the module, single `main.go`-plus-packages layout, no
+      external frameworks per CLAUDE.md conventions. (`go.mod` has no
+      `require` lines.)
+- [x] `server` and `client` subcommands (stdlib `flag`/`os.Args`
       dispatch, not a CLI framework — this is a two-subcommand tool).
-- [ ] `--instance <N>` flag (default `0`, `--instance=0` explicitly
+- [x] `--instance <N>` flag (default `0`, `--instance=0` explicitly
       identical to omitting the flag — not a special case), per
       `docs/arch/wireguard.md`'s uniform instance-numbering formula.
       Drives the config path (`.../<N>.json`), the default
       `interface_name` (`wganchor<N>`), and the default `listen_port`
       (`60217 + N`) — pure computation, no live tunnel or second VPS
-      needed to write or test it.
-- [ ] Config file loading: JSON, using the layered lookup order from
+      needed to write or test it. Bounds-checked so `listen_port` stays a
+      valid port number.
+- [x] Config file loading: JSON, using the layered lookup order from
       `docs/arch/config-and-lifecycle.md` (`--config` flag →
       `os.UserConfigDir()/wganchor/<N>.json` → `/etc/wganchor/<N>.json`,
       `N` from `--instance`; no implicit cwd lookup — dev use passes
       `--config` explicitly). Refuses to load a config file that isn't
-      mode `0600`. Schema matches what `docs/arch/wireguard.md` specifies
-      for keys, peer endpoint, and `relay_ips` (a list, even though this
-      deployment only has one relay IP so far). Parsing only; no
-      WireGuard calls yet, and no `install`/`uninstall`/systemd work —
-      that's later, this step is just proving the lookup-and-parse path.
-- [ ] Both subcommands currently just print the parsed config and exit —
-      real interface/tunnel setup is sprint 2.
-- [ ] `gofmt` clean, `go build` and `go vet` pass.
-- [ ] Build with `CGO_ENABLED=0`, then confirm staticness with `file` and
+      mode `0600`, or one that's a directory. Schema matches what
+      `docs/arch/wireguard.md` specifies for keys, peer endpoint, and
+      `relay_ips` (a list, even though this deployment only has one relay
+      IP so far). Parsing only; no WireGuard calls yet, and no
+      `install`/`uninstall`/systemd work — that's later, this step is
+      just proving the lookup-and-parse path.
+- [x] Both subcommands currently just print the parsed config and exit —
+      real interface/tunnel setup is sprint 2. Private key is redacted in
+      the printed output.
+- [x] `gofmt` clean, `go build` and `go vet` pass.
+- [x] Build with `CGO_ENABLED=0`, then confirm staticness with `file` and
       `ldd` (`ldd` should report "not a dynamic executable") — matches the
       CLAUDE.md "single static Linux binary" convention, and this is the
-      only place in the sprint that actually checks it.
+      only place in the sprint that actually checks it. Confirmed.
+
+Reviewed by an Opus-model implementation reviewer: PASS, with one required
+fix (compiled binary was untracked in the repo root, `.gitignore` didn't
+cover it) and three optional nits (directory rejection on explicit
+`--config`, instance bounds checking, a stronger distinctness assertion in
+the no-config-found test), all applied before commit.
 
 ## Exit criteria
 
-- [ ] External host reached a process bound to the secondary IP on the
+- [x] External host reached a process bound to the secondary IP on the
       home machine, through a hand-configured WireGuard tunnel, on both
       the inbound and outbound paths, and after an idle/NAT-keepalive
       period — this is the sprint's key validation and gates sprint 2
       being planned at all.
-- [ ] A payload larger than one MTU transferred successfully over the
+- [x] A payload larger than one MTU transferred successfully over the
       tunnel.
-- [ ] Any deviation from the research doc's assumed routing design is
+- [x] Any deviation from the research doc's assumed routing design is
       written back into `docs/arch/overview.md`.
-- [ ] `wganchor server` / `wganchor client` build as a single static
+- [x] `wganchor server` / `wganchor client` build as a single static
       binary (verified via `ldd`/`file`, not assumed), parse a config
       file, and run without error.
-- [ ] `--instance 1` (no config file present) computes a distinct config
+- [x] `--instance 1` (no config file present) computes a distinct config
       path, default `interface_name`, and default `listen_port` from the
       no-flag/`--instance 0` case, confirming the uniform numbering
       formula actually holds in code — verified by inspection/printed
-      output, no second VPS or live tunnel required.
+      output, no second VPS or live tunnel required. Also locked in by
+      `TestResolveConfigPathNoneFoundReturnsErrAndChecked` and
+      `TestInstanceDefaultsAreDistinct`.
