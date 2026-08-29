@@ -46,7 +46,7 @@ func TestSkeletonConfigDistinctPerInstance(t *testing.T) {
 func touchFiles(t *testing.T, dir string, names ...string) {
 	t.Helper()
 	for _, name := range names {
-		if err := os.WriteFile(filepath.Join(dir, name), nil, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -59,7 +59,7 @@ func touchFiles(t *testing.T, dir string, names ...string) {
 func touchInWantsDir(t *testing.T, systemdDir, wantsSubdir string, names ...string) {
 	t.Helper()
 	dir := filepath.Join(systemdDir, wantsSubdir)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	touchFiles(t, dir, names...)
@@ -203,7 +203,7 @@ func TestWriteUnitIfChangedRewritesStaleContent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wganchor-server@.service")
 	stale := "[Service]\nType=simple\n"
-	if err := os.WriteFile(path, []byte(stale), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -223,7 +223,7 @@ func TestWriteUnitIfChangedRewritesStaleContent(t *testing.T) {
 func TestWriteUnitIfChangedLeavesUpToDateContentAlone(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wganchor-server@.service")
-	if err := os.WriteFile(path, []byte(unitTemplateForRole("server")), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(unitTemplateForRole("server")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.Stat(path)
@@ -261,7 +261,7 @@ func TestWriteWatchUnitIfChangedWritesWhenMissing(t *testing.T) {
 func TestWriteWatchUnitIfChangedLeavesUpToDateContentAlone(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wganchor-watch-server@.service")
-	if err := os.WriteFile(path, []byte(watchUnitTemplateForRole("server")), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(watchUnitTemplateForRole("server")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.Stat(path)

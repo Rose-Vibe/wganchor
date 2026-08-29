@@ -64,7 +64,7 @@ func runWatchCmd(args []string) {
 	instance := fs.Int("instance", 0, "instance number, selects wganchor<N>/<N>.json (default 0)")
 	configPath := fs.String("config", "", "explicit path to config file, overrides the default lookup")
 	interval := fs.Duration("interval", 5*time.Minute, "periodic reconciliation backstop interval")
-	fs.Parse(rest)
+	_ = fs.Parse(rest) // flag.ExitOnError already exits the process on a parse failure
 
 	if err := validateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor watch: %v\n", err)
@@ -106,7 +106,7 @@ func runFirewallCmd(args []string) {
 	fs := flag.NewFlagSet("firewall "+sub, flag.ExitOnError)
 	instance := fs.Int("instance", 0, "instance number (default 0)")
 	port := fs.String("port", "", "port spec <port|start-end>/<tcp|udp|both>, e.g. 8080/tcp, 8000-8010/udp, 53/both (required for allow/deny)")
-	fs.Parse(args[1:])
+	_ = fs.Parse(args[1:]) // flag.ExitOnError already exits the process on a parse failure
 
 	if err := validateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor firewall %s: %v\n", sub, err)
@@ -181,7 +181,7 @@ func runRelayCmd(args []string) {
 	fs := flag.NewFlagSet("relay "+sub, flag.ExitOnError)
 	instance := fs.Int("instance", 0, "instance number (default 0)")
 	ip := fs.String("ip", "", "relay IPv4 address (required)")
-	fs.Parse(rest)
+	_ = fs.Parse(rest) // flag.ExitOnError already exits the process on a parse failure
 
 	if err := validateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor relay %s: %v\n", sub, err)
@@ -238,7 +238,7 @@ func runPairPubkeyCmd(args []string) {
 	fs := flag.NewFlagSet("pair pubkey", flag.ExitOnError)
 	instance := fs.Int("instance", 0, "instance number (default 0)")
 	configPath := fs.String("config", "", "explicit path to config file, overrides the default lookup")
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError already exits the process on a parse failure
 
 	if err := validateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: %v\n", err)
@@ -271,7 +271,7 @@ func runPairPeerCmd(args []string) {
 	configPath := fs.String("config", "", "explicit path to config file, overrides the default lookup")
 	publicKey := fs.String("public-key", "", "the peer's WireGuard public key (required)")
 	endpoint := fs.String("endpoint", "", "the peer's host:port, e.g. vps.example.com:60217 (optional)")
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError already exits the process on a parse failure
 
 	if err := validateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair peer: %v\n", err)
@@ -337,7 +337,7 @@ notes:
     the default would select — see docs/sprints/pairing/plan-pairing.md.
 `)
 	}
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError already exits the process on a parse failure
 
 	remoteInstanceSet, configSet := false, false
 	fs.Visit(func(f *flag.Flag) {
@@ -392,7 +392,7 @@ func runInstall(args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	instance := fs.Int("instance", 0, "instance number (default 0)")
 	noWatch := fs.Bool("no-watch", false, "don't install/enable the reconciliation watch companion (on by default)")
-	fs.Parse(rest)
+	_ = fs.Parse(rest) // flag.ExitOnError already exits the process on a parse failure
 
 	if err := validateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor install: %v\n", err)
@@ -409,7 +409,7 @@ func runUninstall(args []string) {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	instance := fs.Int("instance", 0, "instance number (default 0)")
 	purge := fs.Bool("purge", false, "also remove the config and interface for this instance")
-	fs.Parse(rest)
+	_ = fs.Parse(rest) // flag.ExitOnError already exits the process on a parse failure
 
 	if err := validateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor uninstall: %v\n", err)
@@ -443,7 +443,7 @@ func run(role string, args []string) {
 	noFirewall := fs.Bool("no-firewall", false,
 		"skip enabling the default client-side firewall for this invocation only — an explicit opt-out "+
 			"of a security default; `wganchor firewall disable` is the durable opt-out that survives a reboot")
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError already exits the process on a parse failure
 
 	if err := validateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)

@@ -63,7 +63,7 @@ func TestResolveConfigPathExplicitMustExist(t *testing.T) {
 func TestResolveConfigPathExplicitFound(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
-	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,7 +123,7 @@ func TestValidateInstanceRejectsOutOfRange(t *testing.T) {
 func TestLoadConfigRejectsWrongMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
-	if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestLoadConfigParsesSchema(t *testing.T) {
 		"relay_ips": ["203.0.113.20"],
 		"persistent_keepalive": 25
 	}`
-	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

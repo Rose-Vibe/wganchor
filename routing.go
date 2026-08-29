@@ -294,7 +294,7 @@ func CheckIPForward() (bool, error) {
 // plan-tunnel-runtime.md's exit criteria ("unit-tested against the check
 // function directly, not by mutating the real sysctl").
 func ipForwardEnabled(path string) (bool, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is the fixed ipForwardPath constant in production, or a test fixture path in tests — never external input
 	if err != nil {
 		return false, err
 	}

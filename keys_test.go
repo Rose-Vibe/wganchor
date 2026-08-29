@@ -9,7 +9,7 @@ import (
 func TestPersistConfigRoundTripsAndKeepsMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
-	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -22,7 +22,7 @@ func TestPersistConfigRoundTripsAndKeepsMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
+	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("expected mode 0600, got %04o", perm)
 	}
 

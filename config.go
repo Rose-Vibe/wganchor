@@ -95,7 +95,7 @@ func validateInstance(instance int) error {
 // paths that were checked.
 func resolveConfigPath(explicit string, instance int) (path string, checked []string, err error) {
 	if explicit != "" {
-		info, statErr := os.Stat(explicit)
+		info, statErr := os.Stat(explicit) //nolint:gosec // explicit is the operator-supplied --config flag value, not external/untrusted input
 		if statErr != nil || info.IsDir() {
 			return "", []string{explicit}, fmt.Errorf("%w: %s", errNoConfigFound, explicit)
 		}
@@ -109,7 +109,7 @@ func resolveConfigPath(explicit string, instance int) (path string, checked []st
 	candidates = append(candidates, filepath.Join("/etc/wganchor", fmt.Sprintf("%d.json", instance)))
 
 	for _, candidate := range candidates {
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() { //nolint:gosec // candidate is the operator's --config flag, or $XDG_CONFIG_HOME (via os.UserConfigDir)/etc/wganchor joined with an already-validated int instance number — root's own environment, not external/untrusted input
 			return candidate, candidates, nil
 		}
 	}
@@ -120,15 +120,15 @@ func resolveConfigPath(explicit string, instance int) (path string, checked []st
 // that isn't mode 0600 (never a config the tool itself wrote otherwise,
 // since it may contain a WireGuard private key).
 func loadConfig(path string) (*Config, error) {
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) //nolint:gosec // path is resolveConfigPath's result: the operator's --config flag or a fixed candidate directory, not external input
 	if err != nil {
 		return nil, err
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
+	if perm := info.Mode().Perm(); perm != 0o600 {
 		return nil, fmt.Errorf("refusing to load config with mode %04o (must be 0600): %s", perm, path)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // same path as the os.Stat call above
 	if err != nil {
 		return nil, err
 	}

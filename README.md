@@ -50,6 +50,17 @@ go build -o wganchor .
 Copy the resulting `wganchor` binary to both the VPS and the home machine
 (or build separately on each — it's a single static binary either way).
 
+### Linting
+
+CI runs [`golangci-lint`](https://golangci-lint.run/) (config:
+`.golangci.yml`). To run it locally before pushing:
+
+```
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+golangci-lint run    # lint
+golangci-lint fmt    # apply gofmt + gofumpt formatting
+```
+
 ## Command reference
 
 Every subcommand accepts `--instance N` (default `0`) to target a specific

@@ -127,14 +127,14 @@ func PairPeer(cfg *Config, path string, publicKey string, endpoint string, notic
 		}
 	}
 	if looksLikePrivateKey(publicKey) {
-		fmt.Fprintf(notices, "warning: %s... looks like it might be a WireGuard *private* key, not a public one — double check you copied the right value\n",
+		_, _ = fmt.Fprintf(notices, "warning: %s... looks like it might be a WireGuard *private* key, not a public one — double check you copied the right value\n",
 			truncateKeyForDisplay(publicKey))
 	}
 
 	changed := false
 	if cfg.PeerPublicKey != publicKey {
 		if cfg.PeerPublicKey != "" {
-			fmt.Fprintf(notices, "replacing existing peer %s... with %s...\n",
+			_, _ = fmt.Fprintf(notices, "replacing existing peer %s... with %s...\n",
 				truncateKeyForDisplay(cfg.PeerPublicKey), truncateKeyForDisplay(publicKey))
 		}
 		cfg.PeerPublicKey = publicKey
@@ -200,7 +200,7 @@ func runRemote(prefix []string, remoteArgs ...string) (string, error) {
 	argv = append(argv, prefix...)
 	argv = append(argv, remoteArgs...)
 
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv comes from the operator's own --remote-exec/--target flags on this root-run interactive CLI — the same trust boundary as typing the command directly, not external/untrusted input
 	cmd.Stdin = os.Stdin
 	cmd.Stderr = os.Stderr
 	var stdout bytes.Buffer

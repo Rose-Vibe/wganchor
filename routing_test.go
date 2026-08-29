@@ -175,7 +175,7 @@ func TestIPForwardEnabled(t *testing.T) {
 	dir := t.TempDir()
 
 	enabled := filepath.Join(dir, "enabled")
-	if err := os.WriteFile(enabled, []byte("1\n"), 0644); err != nil {
+	if err := os.WriteFile(enabled, []byte("1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := ipForwardEnabled(enabled); err != nil || !ok {
@@ -183,7 +183,7 @@ func TestIPForwardEnabled(t *testing.T) {
 	}
 
 	disabled := filepath.Join(dir, "disabled")
-	if err := os.WriteFile(disabled, []byte("0\n"), 0644); err != nil {
+	if err := os.WriteFile(disabled, []byte("0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := ipForwardEnabled(disabled); err != nil || ok {

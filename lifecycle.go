@@ -69,7 +69,7 @@ func copyBinaryIfChanged(destPath string) error {
 		return err
 	}
 
-	if destData, err := os.ReadFile(destPath); err == nil && bytes.Equal(destData, selfData) {
+	if destData, err := os.ReadFile(destPath); err == nil && bytes.Equal(destData, selfData) { //nolint:gosec // destPath is always a fixed install-location constant, never external input
 		return nil
 	}
 
@@ -78,14 +78,14 @@ func copyBinaryIfChanged(destPath string) error {
 		return err
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := tmp.Write(selfData); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0755); err != nil {
-		tmp.Close()
+	if err := tmp.Chmod(0o755); err != nil {
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -106,10 +106,10 @@ func copyBinaryIfChanged(destPath string) error {
 func writeUnitIfChanged(unitDir, role string) error {
 	path := filepath.Join(unitDir, unitFileName(role))
 	want := unitTemplateForRole(role)
-	if current, err := os.ReadFile(path); err == nil && string(current) == want {
+	if current, err := os.ReadFile(path); err == nil && string(current) == want { //nolint:gosec // unitDir is a fixed constant and role is one of a small enum, never external input
 		return nil
 	}
-	return os.WriteFile(path, []byte(want), 0644)
+	return os.WriteFile(path, []byte(want), 0o644) //nolint:gosec // systemd unit files must be world-readable (0644); this isn't secret material like the 0600 config
 }
 
 // writeWatchUnitIfChanged is writeUnitIfChanged's counterpart for the
@@ -117,10 +117,10 @@ func writeUnitIfChanged(unitDir, role string) error {
 func writeWatchUnitIfChanged(unitDir, role string) error {
 	path := filepath.Join(unitDir, unitFileName(watchRoleFor(role)))
 	want := watchUnitTemplateForRole(role)
-	if current, err := os.ReadFile(path); err == nil && string(current) == want {
+	if current, err := os.ReadFile(path); err == nil && string(current) == want { //nolint:gosec // unitDir is a fixed constant and role is one of a small enum, never external input
 		return nil
 	}
-	return os.WriteFile(path, []byte(want), 0644)
+	return os.WriteFile(path, []byte(want), 0o644) //nolint:gosec // systemd unit files must be world-readable (0644); this isn't secret material like the 0600 config
 }
 
 // InstallInstance implements `wganchor install <role> --instance N
@@ -137,7 +137,7 @@ func InstallInstance(role string, instance int, watch bool) error {
 
 	configPath := configPathForInstance(instance)
 	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(wganchorConfigDir, 0700); err != nil {
+		if err := os.MkdirAll(wganchorConfigDir, 0o700); err != nil {
 			return err
 		}
 		if err := persistConfig(skeletonConfig(instance, ""), configPath); err != nil {
@@ -240,12 +240,12 @@ func InstallInstance(role string, instance int, watch bool) error {
 // already correctly `disabled`). Best-effort: reset-failed's own failure
 // never fails the uninstall.
 func disableUnit(unit string) error {
-	cmd := exec.Command("systemctl", "disable", "--now", unit)
+	cmd := exec.Command("systemctl", "disable", "--now", unit) //nolint:gosec // "systemctl" is a fixed binary; unit is internally constructed by unitName, not external input
 	out, err := cmd.CombinedOutput()
 	if err != nil && !isUnitNotInstalledOutput(string(out)) {
 		return fmt.Errorf("systemctl disable --now %s: %w: %s", unit, err, strings.TrimSpace(string(out)))
 	}
-	exec.Command("systemctl", "reset-failed", unit).Run()
+	_ = exec.Command("systemctl", "reset-failed", unit).Run() //nolint:gosec // same as above; best-effort, per comment above
 	return nil
 }
 
@@ -424,7 +424,7 @@ func UninstallInstance(role string, instance int, purge bool) error {
 		return err
 	}
 	if entries, err := os.ReadDir(wganchorConfigDir); err == nil && len(entries) == 0 {
-		os.Remove(wganchorConfigDir)
+		_ = os.Remove(wganchorConfigDir) // best-effort: leaving an empty dir behind isn't worth failing the uninstall over
 	}
 	return nil
 }

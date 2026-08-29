@@ -75,8 +75,10 @@ func ConfigureInterface(cfg *Config, role, name string) error {
 		return err
 	}
 
-	peerArgs := []string{"set", name, "peer", cfg.PeerPublicKey,
-		"allowed-ips", strings.Join(AllowedIPsForRole(cfg, role), ",")}
+	peerArgs := []string{
+		"set", name, "peer", cfg.PeerPublicKey,
+		"allowed-ips", strings.Join(AllowedIPsForRole(cfg, role), ","),
+	}
 	if role == "client" {
 		peerArgs = append(peerArgs, "endpoint", cfg.PeerEndpoint)
 		keepalive := cfg.PersistentKeepalive

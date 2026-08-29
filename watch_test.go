@@ -23,7 +23,7 @@ func TestReconcileOnceRejectsInvalidConfigWithoutReconciling(t *testing.T) {
 	// Valid JSON, valid mode, but relay_ips is empty — exactly the shape
 	// skeletonConfig (lifecycle.go) writes for a fresh install, and what
 	// an editor could leave behind mid-write.
-	if err := os.WriteFile(path, []byte(`{"private_key":"x","peer_public_key":"y","peer_endpoint":"1.2.3.4:1","interface_name":"wganchor-nonexistent-test-iface","relay_ips":[]}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"private_key":"x","peer_public_key":"y","peer_endpoint":"1.2.3.4:1","interface_name":"wganchor-nonexistent-test-iface","relay_ips":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

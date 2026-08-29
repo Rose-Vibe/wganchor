@@ -66,7 +66,7 @@ LOOP: Lint Fix
 ├── Fix known lint/format issues
 ├── Run formatter (gofmt / cargo fmt)
 ├── Run type/build check → on failure, restart loop
-└── Run linter → on failure, restart loop
+└── Run linter (`golangci-lint run`) → on failure, restart loop
 ```
 
 ### Step 4: Implementation Review

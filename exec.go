@@ -11,7 +11,7 @@ import (
 // error includes stderr, since exec.Command's bare error ("exit status 1")
 // is useless for diagnosing an ip/wg failure.
 func runCmd(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) //nolint:gosec // callers always pass a fixed system binary (ip/wg/nft/systemctl) with internally-constructed args, never external/untrusted input
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -24,7 +24,7 @@ func runCmd(name string, args ...string) (string, error) {
 // runCmdStdin is runCmd but feeds stdin to the child process — used so a
 // private key can be piped in rather than ever appearing in argv.
 func runCmdStdin(stdin string, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) //nolint:gosec // callers always pass a fixed system binary with internally-constructed args, never external/untrusted input
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -38,6 +38,6 @@ func runCmdStdin(stdin string, name string, args ...string) (string, error) {
 // commandSucceeds runs name with args and reports only whether it
 // exited zero, for existence/type checks where stdout doesn't matter.
 func commandSucceeds(name string, args ...string) bool {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) //nolint:gosec // callers always pass a fixed system binary with internally-constructed args, never external/untrusted input
 	return cmd.Run() == nil
 }

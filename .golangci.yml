@@ -1,0 +1,36 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - revive
+    - gosec
+  # No errcheck settings needed for the ~75 fmt.Fprint*(os.Stdout|os.Stderr,
+  # ...) calls in this codebase: errcheck's own built-in default exclusions
+  # already cover plain stdout/stderr writes (confirmed empirically —
+  # removing errcheck's defaults, not just the absence of a config block,
+  # is what surfaces those as findings). The two fmt.Fprintf(notices, ...)
+  # calls in pair.go, where notices is an io.Writer parameter rather than
+  # os.Stderr directly, are handled at their call sites instead.
+  exclusions:
+    rules:
+      # Test files legitimately write 0644/0755 scratch fixtures; gosec's
+      # permission checks are about production file creation, not test
+      # temp dirs.
+      - path: _test\.go$
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofumpt
+
+issues:
+  # Default caps (50 issues/linter, 3 of the same text) exist for huge
+  # codebases where a full report would be unreadable noise; on a repo
+  # this size they'd instead hide real issues (confirmed while getting
+  # this codebase to a clean run — several errcheck/gosec sites were
+  # silently cut off at first). Disabled so `golangci-lint run` always
+  # shows everything.
+  max-issues-per-linter: 0
+  max-same-issues: 0
