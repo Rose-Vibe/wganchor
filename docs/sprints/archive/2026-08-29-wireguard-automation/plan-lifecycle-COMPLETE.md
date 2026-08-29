@@ -243,7 +243,35 @@ already offered to provision one on request; ask at that point.
 - [x] Live two-independent-tunnel validation: either completed (if the
       user provides a second VPS during this sprint) or explicitly logged
       as the sprint's one remaining deferred item, not silently dropped.
-      **Deferred** — not attempted this milestone; the user has offered to
-      provision a second VPS on request (see project memory), to be asked
-      for once this is the only remaining item before the sprint can
-      close.
+      **Completed.** The user provisioned a second, independent VPS
+      (a sibling project's host, borrowed for this validation only) with
+      a genuine provider-assigned secondary IPv4 distinct from its own
+      primary/management address — confirmed via the provider's instance
+      metadata service before touching anything, specifically to avoid
+      routing the relay IP over the box's own SSH-bearing primary address.
+      `wganchor install server --instance 1` on that VPS and
+      `wganchor install client --instance 1` at home, keys exchanged
+      manually, `relay_ips` set to the secondary IP. Result, with the
+      real instance `0` tunnel (a different VPS) active and undisturbed
+      throughout:
+      - Both tunnels handshake and run concurrently; `wg show` lists two
+        separate interfaces with distinct keys, ports, and
+        `AllowedIPs`; instance 1's client-side policy-routing table/
+        priority (60218/20218) is correctly isolated from instance 0's
+        (60217/20217).
+      - Inbound: an HTTP server bound to the secondary IP at home,
+        reached over the public internet by curling it from the VPS
+        itself, returned the expected response.
+      - Outbound: a curl from home sourced from the secondary IP
+        (`--interface`) reached an HTTP server on the VPS's primary IP;
+        the VPS's access log recorded the source as the secondary IP,
+        confirming egress is actually routed through the tunnel rather
+        than the host's normal route.
+      - Teardown: both instances `uninstall --purge`d cleanly, and the
+        borrowed VPS's firewall rules, `ip_forward` sysctl, and
+        `wireguard-tools` package were all reverted to their pre-test
+        state (verified: `iptables -L FORWARD` policy unchanged,
+        no wganchor units/binary/config remain). The user's own
+        provider-assigned secondary IP itself was left alone — that's
+        provisioned at the account level, not something `wganchor`
+        or this validation ever touched.

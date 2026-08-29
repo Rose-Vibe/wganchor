@@ -74,3 +74,29 @@ exercised by hand. The normal CLAUDE.md autonomous pipeline applies
 throughout, including through implementation, stopping only for the
 standard exceptions (architectural conflict, irreversible consequence,
 systemic test failure, unsafe/destructive action).
+
+**Sprint complete, 2026-08-29.** All four exit criteria met:
+
+- Real tunnel bring-up (`plan-tunnel-runtime.md`) implemented, reviewed
+  (two passes), and live-validated end-to-end against the original VPS —
+  see that plan's exit criteria and `docs/arch/wireguard.md`.
+- All network manipulation confirmed idempotent, including full
+  reconciliation of removed `relay_ips` and (added during the lifecycle
+  milestone) cleanup of client-side policy-routing rules on purge.
+- Install/uninstall via systemd (`plan-lifecycle.md`) implemented,
+  reviewed (two passes, several rounds of fixes), and live-validated —
+  including the multi-instance structural check (`--instance 1` on the
+  home machine alone, no second VPS needed).
+- Live two-independent-tunnel validation completed against a second,
+  temporarily-borrowed VPS with its own genuine secondary IP: both
+  tunnels ran concurrently, inbound and outbound both confirmed over the
+  real public internet path, and the borrowed VPS was fully reverted
+  afterward (firewall rules, `ip_forward`, `wireguard-tools` package, and
+  all `wganchor` state removed) — see `plan-lifecycle.md`'s exit criteria
+  for the full record.
+
+`wganchor` now does everything CLAUDE.md's goal describes: a single
+static binary that brings up and tears down a real relay tunnel, self-
+provisions its own keys, and installs/uninstalls itself as a systemd
+service, all idempotently. No further sprint is planned as of this
+writing.

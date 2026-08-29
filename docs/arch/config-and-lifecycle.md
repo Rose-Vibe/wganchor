@@ -1,7 +1,8 @@
 # Config, Keys, and Lifecycle
 
 Status: config loading, key handling, and lifecycle (install/uninstall,
-systemd) are all implemented — see `docs/sprints/wireguard-automation/`.
+systemd) are all implemented — see
+`docs/sprints/archive/2026-08-29-wireguard-automation/`.
 The sections below were originally written as pre-implementation design
 decisions; where implementation diverged or added detail (systemd unit
 `Type`, the `enable`/`start` split, instance-enablement detection), that's
@@ -77,8 +78,8 @@ warning, not a silent log line easy to miss on a headless box.
 
 ## Lifecycle (systemd, install/uninstall)
 
-Implemented in `lifecycle.go`/`units.go` (`wireguard-automation` sprint,
-`plan-lifecycle.md`).
+Implemented in `lifecycle.go`/`units.go` — see
+`docs/sprints/archive/2026-08-29-wireguard-automation/plan-lifecycle-COMPLETE.md`.
 
 - Ships a systemd *template* unit per role (`wganchor-server@.service`,
   `wganchor-client@.service`, embedded in the binary via `//go:embed` from
