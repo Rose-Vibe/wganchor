@@ -182,10 +182,12 @@ purely additive.
       after `go vet` and before `go build`.
 - [x] CLAUDE.md's lint-fix loop names `golangci-lint` explicitly instead
       of referring to "the linter" generically.
-- [ ] A push triggers and passes the new CI step live on GitHub, with no
+- [x] A push triggers and passes the new CI step live on GitHub, with no
       unexpected annotations (learned from milestone 1: check the
-      Actions run output, not just "the YAML looks right"). Pending: to
-      be checked immediately after this commit is pushed.
+      Actions run output, not just "the YAML looks right"). Push
+      `8767c3e` triggered run 33272586092: all steps including
+      `golangci-lint` passed, zero annotations (confirmed via the
+      GitHub API, not just the visible log).
 - [x] README documents the local install/run commands (new "Linting"
       subsection under "Build").
 
