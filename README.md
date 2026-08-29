@@ -390,3 +390,7 @@ sudo wganchor uninstall <server|client> --instance 0 --purge    # also delete co
 - `docs/arch/resilience.md` — the `watch` self-healing design.
 - `docs/sprints/archive/` — completed feature plans, including full design
   rationale for `pair` (automated key exchange).
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
