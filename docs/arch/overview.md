@@ -34,7 +34,7 @@ anything:
 Conclusion: Vultr routes the secondary IP to the instance's link at the
 network layer, independent of whether the OS binds it locally. This is
 exactly what the project's core assumption requires — the VPS can leave
-the secondary IP unbound and forward it to `wg0` via a plain route,
+the secondary IP unbound and forward it to `wganchor0` via a plain route,
 **no "don't deliver locally" trick needed** (no dummy interface, no
 iptables DROP rule to suppress local delivery — the kernel was never
 going to deliver it locally in the first place, since no local interface
@@ -55,10 +55,10 @@ Not yet built or tested end-to-end — this is the design the manual PoC
 - **Inbound** (internet-initiated): internet → Vultr edge (routes the
   secondary `/32` to the VPS's link, confirmed above) → VPS `enp1s0` →
   kernel routing table (no local address match) → `ip route` sends it to
-  `wg0` (requires `net.ipv4.ip_forward=1`) → WireGuard tunnel → home `wg0`
-  → local socket bound to `203.0.113.20`.
+  `wganchor0` (requires `net.ipv4.ip_forward=1`) → WireGuard tunnel → home
+  `wganchor0` → local socket bound to `203.0.113.20`.
 - **Outbound** (home-initiated): local socket on home machine, bound to
-  `203.0.113.20` → home `wg0` → tunnel → VPS `wg0` → VPS routes it back
+  `203.0.113.20` → home `wganchor0` → tunnel → VPS `wganchor0` → VPS routes it back
   out `enp1s0` sourced as `203.0.113.20` (not NAT'd — the VPS legitimately
   owns that IP from Vultr's perspective) → internet. This direction is
   untested so far and is where `rp_filter`/policy-routing is most likely

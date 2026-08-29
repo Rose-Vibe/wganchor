@@ -17,17 +17,19 @@ is needed for it at all.
 - [ ] `sysctl net.ipv4.ip_forward=1`, persisted via
       `/etc/sysctl.d/`, not just the running kernel.
 - [ ] Confirm `wg` and `wg-quick` are on `PATH`.
-- [ ] Confirm nothing else on the VPS already listens on the WireGuard UDP
-      port we plan to use — the VPS is the side holding the listening
-      endpoint (home is typically behind NAT and initiates), so a
-      collision here matters at least as much as on the home machine.
+- [ ] Confirm nothing else on the VPS already listens on UDP `60217` (the
+      `wganchor` default, chosen specifically to avoid the standard
+      WireGuard `51820` — see `docs/arch/wireguard.md`) — `ss -uln | grep
+      60217`. The VPS is the side holding the listening endpoint (home is
+      typically behind NAT and initiates), so a collision here matters at
+      least as much as on the home machine.
 
 ## Home machine (Ubuntu 24.04, `6.8.0-138-generic`)
 
 - [ ] `apt update && apt install -y wireguard-tools`
 - [ ] Confirm `wg` and `wg-quick` are on `PATH`.
-- [ ] Confirm nothing else on this machine already listens on the
-      WireGuard UDP port we plan to use (avoid a collision before the PoC).
+- [ ] Confirm nothing else on this machine already listens on UDP `60217`
+      (`ss -uln | grep 60217`) — avoid a collision before the PoC.
 
 ## Go toolchain
 

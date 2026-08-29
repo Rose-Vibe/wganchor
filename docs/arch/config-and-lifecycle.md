@@ -74,7 +74,7 @@ work, so the subcommand surface doesn't need reworking later.
   `wganchor-client.service`): `Restart=on-failure`,
   `WantedBy=multi-user.target`.
 - On startup, the daemon must idempotently reconcile interface/route state
-  rather than assume a clean slate — a prior crash leaving `wg0`
+  rather than assume a clean slate — a prior crash leaving `wganchor0`
   half-configured must not require manual cleanup before it can start
   again. Same idempotency rule CLAUDE.md already states for network
   manipulation generally, applied specifically to the restart/recovery

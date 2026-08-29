@@ -36,6 +36,40 @@ actual implementation, not just a reference — `plan-research.md`'s
 deliverable to record them is what sprint 2 will translate into
 `exec.Command` calls almost directly.
 
+## Interface name and port: don't collide with a "typical" WireGuard setup
+
+`wganchor` uses WireGuard, but a machine running it might also be running an
+unrelated WireGuard VPN (a personal tunnel, a corporate client, etc.) set up
+the conventional way. Two defaults are chosen specifically so the two never
+step on each other without someone going out of their way to make that
+happen:
+
+- **Interface name: `wganchor0`**, not `wg0`. `wg0` is the name essentially
+  every WireGuard tutorial, `wg-quick` example config, and NetworkManager
+  profile uses — it's the single most likely interface name to already
+  exist on a box for an unrelated reason. `wganchor` creates its own
+  `wganchor0` via `ip link add wganchor0 type wireguard` and never reads or
+  writes anything under `/etc/wireguard/` (its config lives at
+  `/etc/wganchor/config.json`, per `config-and-lifecycle.md`) — so it has no
+  path by which it could interact with an existing `wg-quick`-managed setup
+  at all, let alone collide with one.
+- **Default `listen_port`: `60217`**, not `51820`. `51820` is the
+  IANA-unassigned-but-universally-used default baked into virtually every
+  WireGuard example, and multi-tunnel setups that increment from it
+  (`51820`, `51821`, `51822`, ...) are common enough that picking a
+  neighboring number doesn't actually buy independence. `60217` has no
+  relationship to `51820` and isn't part of that incrementing pattern — it's
+  just a fixed, arbitrary port in the IANA dynamic/private range
+  (49152–65535, never assigned to a registered service), documented here so
+  both sides agree on it without needing to negotiate. It's still fully
+  overridable via the `listen_port` config field for anyone who wants
+  something else.
+
+Neither choice is a hard guarantee against collision — any interface name
+or port can theoretically already be in use — but both clear the bar of
+"you'd have to deliberately pick the same unusual values to conflict,"
+rather than colliding with the common-case default setup.
+
 ## Keys
 
 Generated the same way: `wg genkey` / `wg pubkey`, shelled out — no
@@ -85,8 +119,11 @@ needed by both `server` and `client`:
   relay IP, since the relay IP isn't bound anywhere to receive a
   WireGuard handshake) — set on the home/client side only; the VPS side
   has no endpoint to dial, it waits for the client's handshake.
-- `listen_port` — UDP port WireGuard listens on (VPS side; needs the
-  port-collision check from `plan-environment.md`).
+- `listen_port` — UDP port WireGuard listens on (VPS side). Defaults to
+  `60217` (see above), overridable; needs the port-collision check from
+  `plan-environment.md`.
+- `interface_name` — defaults to `wganchor0` (see above), overridable in
+  case that name itself somehow collides.
 - `relay_ip` — the secondary IP being relayed (`203.0.113.20` for this
   deployment) — used by both sides to set up their respective routes /
   local bind address.
@@ -100,6 +137,8 @@ specifically to make additive schema growth cheap.
 ## Status
 
 - [x] Interface/peer management approach decided: shell out to `ip`/`wg`.
+- [x] Interface name decided: `wganchor0` (not `wg0`), overridable.
+- [x] Default listen port decided: `60217` (not `51820`), overridable.
 - [x] Key generation approach decided: shell out to `wg genkey`/`wg pubkey`,
       self-provisioned on first run.
 - [x] `PersistentKeepalive` interval decided: 25s, home side only.
