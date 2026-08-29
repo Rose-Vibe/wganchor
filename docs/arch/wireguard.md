@@ -169,7 +169,29 @@ later if key rotation or pre-provisioning needs it; not required for v1.
 
 Exchange: manual/file-based, as already decided — whoever sets up the
 second side copies the first side's public key and endpoint into their
-config by hand. No auto-exchange protocol in scope.
+config by hand. The underlying exchange is still exactly this: a pubkey
+and an endpoint landing in the other side's config file, nothing more.
+`wganchor pair` (see `docs/sprints/pairing/plan-pairing.md`) automates
+*performing* that manual step over SSH (or any user-supplied
+`--remote-exec`) — each side's half is still just `wganchor pair
+pubkey`/`wganchor pair peer`, runnable by hand exactly as before. There
+is still no separate auto-exchange protocol or trust mechanism beyond
+WireGuard's own pubkey pairing.
+
+**Known gap, pre-existing but more reachable now that `pair` makes
+rewriting `peer_public_key` routine (found reviewing `pair`'s
+implementation)**: `ConfigureInterface` only ever *adds* a peer via `wg
+set ... peer <new> ...` — there is no code path anywhere that removes a
+peer no longer referenced by config. Practically, this means changing
+`peer_public_key` and then re-running `server`/`client` does not swap
+the live interface's authorized peer; it adds the new key as an
+*additional* authorized peer while the old one remains live and
+handshake-capable, with no visible symptom (the old peer's handshake
+counter looks exactly as healthy as before). Not a `pair`-specific bug —
+`pair` never touches the live interface at all (see above) — but worth
+knowing before treating "change the config, then re-run" as equivalent
+to "replace who's authorized." Fixing `ConfigureInterface` to prune
+stale peers is future work, not part of this plan.
 
 ## PersistentKeepalive
 

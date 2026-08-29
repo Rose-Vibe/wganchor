@@ -25,6 +25,8 @@ func main() {
 		runWatchCmd(os.Args[2:])
 	case "firewall":
 		runFirewallCmd(os.Args[2:])
+	case "pair":
+		runPairCmd(os.Args[2:])
 	case "install":
 		runInstall(os.Args[2:])
 	case "uninstall":
@@ -43,6 +45,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       wganchor install <server|client> [--instance N] [--no-watch]")
 	fmt.Fprintln(os.Stderr, "       wganchor uninstall <server|client> [--instance N] [--purge]")
 	fmt.Fprintln(os.Stderr, "       wganchor firewall enable|allow|deny|disable --instance N [--port <port>/<tcp|udp>]")
+	fmt.Fprintln(os.Stderr, "       wganchor pair pubkey --instance N")
+	fmt.Fprintln(os.Stderr, "       wganchor pair peer --instance N --public-key KEY [--endpoint HOST:PORT]")
+	fmt.Fprintln(os.Stderr, "       wganchor pair run --instance N --remote TARGET [--remote-instance M] [--remote-exec TEMPLATE] [--endpoint HOST:PORT]")
 }
 
 // runWatchCmd parses `wganchor watch <server|client> [--instance N]
@@ -130,6 +135,186 @@ func runFirewallCmd(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("wganchor firewall %s: instance %d done\n", sub, *instance)
+}
+
+// runPairCmd dispatches `wganchor pair pubkey|peer|run`. See
+// docs/sprints/pairing/plan-pairing.md for the full design: pair pubkey
+// and pair peer are plain, scriptable primitives a human could also run
+// by hand (including manually after ssh-ing in themselves); pair run
+// automates calling those same two commands against a remote target.
+func runPairCmd(args []string) {
+	const usageLine = "usage: wganchor pair <pubkey|peer|run> --instance N [flags] (see --help)"
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, usageLine)
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "pubkey":
+		runPairPubkeyCmd(args[1:])
+	case "peer":
+		runPairPeerCmd(args[1:])
+	case "run":
+		runPairRunCmd(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, usageLine)
+		os.Exit(1)
+	}
+}
+
+// runPairPubkeyCmd prints exactly the instance's public key on stdout —
+// a scripting primitive, both for a human's own script and for
+// runPairRunCmd's remote invocation. Any operational message (e.g. "a
+// new keypair was generated") is PairPubkey's job to send to stderr
+// instead, never stdout.
+func runPairPubkeyCmd(args []string) {
+	fs := flag.NewFlagSet("pair pubkey", flag.ExitOnError)
+	instance := fs.Int("instance", 0, "instance number (default 0)")
+	configPath := fs.String("config", "", "explicit path to config file, overrides the default lookup")
+	fs.Parse(args)
+
+	if err := validateInstance(*instance); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: %v\n", err)
+		os.Exit(1)
+	}
+	path, checked, err := resolveConfigPath(*configPath, *instance)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: no config found for instance %d\n", *instance)
+		fmt.Fprintf(os.Stderr, "  checked: %s\n", strings.Join(checked, ", "))
+		os.Exit(1)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: %v\n", err)
+		os.Exit(1)
+	}
+	pub, err := PairPubkey(cfg, path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(pub)
+}
+
+// runPairPeerCmd writes --public-key (and --endpoint, if given) as this
+// instance's peer identity.
+func runPairPeerCmd(args []string) {
+	fs := flag.NewFlagSet("pair peer", flag.ExitOnError)
+	instance := fs.Int("instance", 0, "instance number (default 0)")
+	configPath := fs.String("config", "", "explicit path to config file, overrides the default lookup")
+	publicKey := fs.String("public-key", "", "the peer's WireGuard public key (required)")
+	endpoint := fs.String("endpoint", "", "the peer's host:port, e.g. vps.example.com:60217 (optional)")
+	fs.Parse(args)
+
+	if err := validateInstance(*instance); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair peer: %v\n", err)
+		os.Exit(1)
+	}
+	if *publicKey == "" {
+		fmt.Fprintln(os.Stderr, "wganchor pair peer: --public-key is required")
+		os.Exit(1)
+	}
+	path, checked, err := resolveConfigPath(*configPath, *instance)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair peer: no config found for instance %d\n", *instance)
+		fmt.Fprintf(os.Stderr, "  checked: %s\n", strings.Join(checked, ", "))
+		os.Exit(1)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair peer: %v\n", err)
+		os.Exit(1)
+	}
+	if err := PairPeer(cfg, path, *publicKey, *endpoint, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair peer: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runPairRunCmd is the pair-exchange orchestrator: fetches this
+// instance's pubkey and --remote's pubkey (via --remote-exec, default
+// "ssh {}"), and writes each as the other's peer — see PairRun.
+func runPairRunCmd(args []string) {
+	fs := flag.NewFlagSet("pair run", flag.ExitOnError)
+	instance := fs.Int("instance", 0, "local instance number (default 0)")
+	remoteInstance := fs.Int("remote-instance", -1, "remote instance number (if omitted: same as --instance, EXCEPT this is refused when --config is also given — see --help)")
+	remote := fs.String("remote", "", "remote target passed to --remote-exec's {} placeholder, e.g. user@vps.example.com (required)")
+	remoteExec := fs.String("remote-exec", "ssh {}", `remote execution command template; must contain exactly one "{}" placeholder for --remote's value`)
+	endpoint := fs.String("endpoint", "", "override the derived WireGuard peer_endpoint for the local side")
+	configPath := fs.String("config", "", "explicit path to the LOCAL config file, overrides the default lookup (the remote side always uses its own default lookup)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: wganchor pair run --instance N --remote TARGET [flags]")
+		fs.PrintDefaults()
+		fmt.Fprint(os.Stderr, `
+notes:
+  - pair run only ever writes config file fields (peer_public_key,
+    peer_endpoint) on both sides. It never calls "wg set" or restarts
+    anything — run "wganchor server"/"wganchor client" again afterward
+    to apply a newly-paired peer to the live WireGuard interface.
+  - the derived --endpoint (used when --endpoint is omitted) is a guess:
+    it assumes the remote's listen_port matches the standard formula and
+    that --remote is a directly-dialable host, not an ssh_config Host
+    alias. Pass --endpoint explicitly if either assumption is wrong.
+  - a partial failure is recovered by re-running pair run, not by an
+    automatic rollback: every step it performs is independently
+    idempotent, so simply fixing whatever failed and re-running
+    converges both sides correctly.
+  - for a non-root SSH login needing sudo on the remote, --remote-exec
+    "ssh {} sudo" only works if the remote sudo does not require a
+    password (NOPASSWD): an interactive sudo password prompt cannot be
+    answered through pair run's non-interactive remote-exec plumbing.
+  - --remote-instance defaults to --instance's value, EXCEPT this
+    inference is refused (and --remote-instance becomes required) when
+    --config is also given: --config makes --instance's number a pure
+    label for the local lookup, with no bearing on which remote config
+    the default would select — see docs/sprints/pairing/plan-pairing.md.
+`)
+	}
+	fs.Parse(args)
+
+	remoteInstanceSet, configSet := false, false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "remote-instance":
+			remoteInstanceSet = true
+		case "config":
+			configSet = true
+		}
+	})
+
+	if *remote == "" {
+		fmt.Fprintln(os.Stderr, "wganchor pair run: --remote is required")
+		os.Exit(1)
+	}
+	if err := validateInstance(*instance); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair run: %v\n", err)
+		os.Exit(1)
+	}
+	if configSet && !remoteInstanceSet {
+		fmt.Fprintln(os.Stderr, "wganchor pair run: --remote-instance is required when --config is given (see --help)")
+		os.Exit(1)
+	}
+	ri := *remoteInstance
+	if !remoteInstanceSet {
+		ri = *instance
+	}
+	if err := validateInstance(ri); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair run: --remote-instance: %v\n", err)
+		os.Exit(1)
+	}
+
+	err := PairRun(PairRunOptions{
+		Instance:       *instance,
+		RemoteInstance: ri,
+		Remote:         *remote,
+		RemoteExec:     *remoteExec,
+		Endpoint:       *endpoint,
+		ConfigPath:     *configPath,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor pair run: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wganchor pair run: instance %d paired with %s (remote instance %d)\n", *instance, *remote, ri)
 }
 
 // runInstall and runUninstall parse the shared `<role> [--instance N]`
