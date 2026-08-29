@@ -138,12 +138,26 @@ above. Storage location and file-mode enforcement are already decided in
 **The private key must never appear as a command-line argument.** Any
 process's argv is readable by other users via `/proc/<pid>/cmdline` — this
 is exactly why `wg genkey` writes to stdout and `wg set ... private-key`
-takes a *file path* rather than accepting the key inline. When sprint 2
-turns these into `exec.Command` calls, the key reaches `wg` only via a
-`0600` file path or stdin, never as an argument. Easy to get wrong if the
-PoC's shell commands are copied without this in mind — worth stating
-explicitly since the doc above describes the translation as "almost
-direct."
+takes a *file path* rather than accepting the key inline. Easy to get
+wrong if the PoC's shell commands are copied without this in mind — worth
+stating explicitly since the doc above describes the translation as
+"almost direct."
+
+**Confirmed during the wireguard-automation sprint's implementation: use
+`wg set <iface> private-key /dev/stdin`, not a temp file.** A `0600` temp
+file (e.g. under the OS temp dir) was tried first and rejected: this
+Ubuntu VPS ships an AppArmor profile (`/etc/apparmor.d/wg`) that confines
+`/usr/bin/wg` to only open files under `/etc/wireguard/` — a temp file
+anywhere else fails with `fopen: Permission denied`, confirmed empirically
+against the real VPS, not a flaky/transient error (a similar-looking
+`wg-quick` "Permission denied" during the bootstrap PoC was likely the
+same underlying confinement, encountered via a different code path).
+`wg set <iface> private-key /dev/stdin` (key piped over stdin) sidesteps
+the confinement entirely — the key never touches disk at all, which is
+strictly better than the temp-file approach even where AppArmor doesn't
+confine `wg`, and doesn't require writing anything (even transiently)
+under `/etc/wireguard/`, which this project deliberately never touches
+(see "Interface name and port" above).
 
 Who generates them: the subcommand that first needs a keypair generates
 one if the config doesn't already have it (i.e. `wganchor server` and
@@ -193,21 +207,60 @@ needed by both `server` and `client`:
   a single value, because multiple relay IPs through the *same* tunnel are
   expected to be normal (see "Multiple interfaces" above) — each entry
   gets its own VPS-side route (`ip route replace <ip>/32 dev wganchor<N>`)
-  and needs to be reflected in the WireGuard `AllowedIPs` on at least the
-  VPS-side peer entry, so WireGuard itself routes traffic for each relay
-  IP to the home peer. The exact `AllowedIPs` shape on the home side
-  (likely broader, since it's accepting arbitrary internet sources relayed
-  through the VPS, not just traffic to/from other relay IPs) is exactly
-  the kind of thing `plan-wireguard-poc.md`'s outbound-path test exists to
-  pin down empirically before it's asserted here as fact. Adding a second
-  Vultr secondary IP later is a one-line config change (append to the
-  list), not a schema or interface change.
+  and is reflected in the VPS-side peer's `AllowedIPs`, one `/32` per
+  entry — this is exactly `wg-quick`'s own `AllowedIPs`-derived routing
+  behavior, reimplemented manually since the Go implementation shells out
+  to `ip`/`wg` directly rather than invoking `wg-quick`. **Confirmed
+  empirically** (bootstrap PoC, then re-confirmed live during the
+  wireguard-automation sprint): the home/client-side peer's `AllowedIPs`
+  is **not** scoped to `relay_ips` at all — it's always `0.0.0.0/0`,
+  independent of how many relay IPs are configured, because WireGuard's
+  own cryptokey routing (not just the kernel routing table) drops any
+  outbound packet whose destination isn't covered by the sending peer's
+  `AllowedIPs`. See "Client-side policy routing" below for how the client
+  avoids that wide `AllowedIPs` turning into a hijacked default route.
+  Adding a second Vultr secondary IP later is a one-line config change
+  (append to the list), not a schema or interface change.
 - `persistent_keepalive` — defaults to `25`, overridable.
 
-This is a minimum for the bootstrap sprint's skeleton to parse; sprint 2
-may add fields as the PoC surfaces needs (e.g. explicit interface name,
-MTU override) — extend, don't restructure, since JSON was chosen
-specifically to make additive schema growth cheap.
+This is a minimum for the bootstrap sprint's skeleton to parse; later
+sprints may add fields as real usage surfaces needs (e.g. explicit MTU
+override) — extend, don't restructure, since JSON was chosen specifically
+to make additive schema growth cheap.
+
+## Client-side policy routing: table/priority formula
+
+Because the client-side peer's `AllowedIPs` is always `0.0.0.0/0` (see
+above) but must **not** become a kernel-wide default route on a shared,
+multi-purpose home machine, the client never lets `wg-quick`-style
+`AllowedIPs`-derived routing run at all — no equivalent of `wg-quick`'s
+`Table = off` is even needed since the Go implementation never adds such a
+route in the first place. Instead, for each `relay_ips` entry the client:
+
+1. Assigns the address to the interface (`ip addr replace <ip>/32 dev
+   wganchor<N>`) — this alone makes the address locally bindable, via the
+   kernel's automatic scope-host "local" route.
+2. Adds a policy route so traffic *sourced from* that address goes out
+   through the tunnel regardless of destination: an `ip rule from <ip>
+   table <table>` entry, plus `ip route replace default dev wganchor<N>
+   table <table>`.
+
+**Table ID and rule priority are derived deterministically from the
+instance number**, reusing the already-collision-checked listen-port
+formula (`60217 + N`) rather than inventing a second collision-prone
+constant:
+
+- `table = 60217 + N`
+- `priority = 20217 + N` (i.e. `(60217 + N) - 40000`)
+
+Instance `0` reproduces the exact values validated by hand in the
+bootstrap PoC (table `60217`, priority `20217`), checked at the time
+against `ip rule show` / `ip route show table all` for collision with an
+unrelated, pre-existing fwmark-based VPN app on the test machine
+(priorities `5210`–`5270`, table `52`) and against the kernel's own
+reserved priorities (`0`, `32766`, `32767`). Every valid instance number
+(`0`–`5318`, per the `--instance` bounds check) stays clear of all of
+these by construction.
 
 ## Status
 
@@ -219,14 +272,25 @@ specifically to make additive schema growth cheap.
 - [x] Multi-interface naming decided (`wganchor0`, `wganchor1`, ...) for
       independent tunnel relationships, as one uniform formula rather than
       a default plus a special case; multiple relay IPs on one tunnel use
-      `relay_ips` + peer `AllowedIPs` instead. `--instance` flag being
-      built in the bootstrap skeleton (not deferred); live two-VPS
-      validation deferred until that point is reached (second VPS
-      available from the user on request).
+      `relay_ips` + peer `AllowedIPs` instead. `--instance` flag built and
+      implemented (bootstrap sprint). Live two-VPS validation still
+      deferred (second VPS available from the user on request).
 - [x] Config schema uses `relay_ips` (list), not a single `relay_ip`.
-- [x] Key generation approach decided: shell out to `wg genkey`/`wg pubkey`,
-      self-provisioned on first run.
+- [x] Key generation approach decided and implemented: shell out to
+      `wg genkey`/`wg pubkey`, self-provisioned on first run
+      (wireguard-automation sprint).
 - [x] `PersistentKeepalive` interval decided: 25s, home side only.
 - [x] Minimum config schema drafted.
-- [ ] Schema will likely need small additions once the PoC is run —
-      expected, not a gap.
+- [x] Client-side `AllowedIPs` confirmed as always `0.0.0.0/0` (cryptokey
+      routing, not kernel routing, is what a narrow `AllowedIPs` breaks);
+      table/priority formula for the client's policy routing decided and
+      implemented — see "Client-side policy routing" above.
+- [x] Private-key delivery to `wg set` confirmed as `/dev/stdin`, not a
+      temp file path — an AppArmor profile on the target VPS confines
+      `/usr/bin/wg` to `/etc/wireguard/` only; see "Keys" above.
+- [x] Real interface/key/route automation implemented and live-validated
+      against the VPS (wireguard-automation sprint): key self-provisioning,
+      idempotent interface/peer setup, and idempotent routing
+      reconciliation (including removal of a relay IP dropped from
+      config) all confirmed working, inbound and outbound, matching the
+      bootstrap PoC's results.

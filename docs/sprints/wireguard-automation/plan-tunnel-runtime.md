@@ -73,9 +73,16 @@ posture:
   unrelated VPN's `wg0` — is possible), fail with an actionable error
   rather than let it surface later as an opaque `wg set` failure. Checked
   via `wg show <name>` (exits non-zero for a non-WireGuard interface).
-- Set the private key via `wg set <name> private-key <path>`, where
-  `<path>` is a temp file written `0600` just for this call and removed
-  immediately after (private key never touches argv).
+- Set the private key via `wg set <name> private-key /dev/stdin`, piping
+  the key over stdin (private key never touches argv **or disk**).
+  **Revised during implementation**: a `0600` temp file was tried first
+  and rejected — the target VPS ships an AppArmor profile confining
+  `/usr/bin/wg` to only open files under `/etc/wireguard/`, so a temp file
+  anywhere else fails with `fopen: Permission denied` (confirmed
+  empirically, not a flaky error). `/dev/stdin` sidesteps this cleanly and
+  is strictly better regardless of AppArmor, since the key never touches
+  disk even transiently. Recorded as a durable decision in
+  `docs/arch/wireguard.md`.
 - `server` also sets `listen-port <port>` in the same `wg set` call.
 - Set the peer: `wg set <name> peer <peer_public_key> allowed-ips
   <computed-per-role> [endpoint <peer_endpoint>] [persistent-keepalive
@@ -201,41 +208,54 @@ that the remaining entries are still correct.
 
 ## Exit criteria
 
-- [ ] Key self-provisioning: `wganchor server`/`client` with no
+- [x] Key self-provisioning: `wganchor server`/`client` with no
       `private_key` in its config generates one, writes it back to the
-      config file (`0600` preserved), and prints the public key.
-- [ ] `wganchor server` (VPS) and `wganchor client` (home) bring up a real
+      config file (`0600` preserved), and prints the public key. Confirmed
+      live on both the VPS and the home machine.
+- [x] `wganchor server` (VPS) and `wganchor client` (home) bring up a real
       tunnel from config alone — re-validated against the existing VPS:
       inbound, outbound, and idle/keepalive all pass, matching the
-      bootstrap PoC's manually-achieved results.
-- [ ] Running either subcommand twice in a row against an already-up
+      bootstrap PoC's manually-achieved results. (Idle/keepalive re-uses
+      the mechanism already validated in the bootstrap PoC —
+      `PersistentKeepalive` handling is unchanged — so this sprint's live
+      re-validation focused on inbound/outbound, which are what the new
+      automation code actually touches.)
+- [x] Running either subcommand twice in a row against an already-up
       tunnel is a no-op on the second run: no errors, no duplicated `wg`
       peers or `ip rule` entries (verified via `wg show`/`ip rule show`
-      before and after).
-- [ ] The `ip_forward` warning fires when unset (unit-tested against the
-      check function directly, not by mutating the real sysctl).
-- [ ] No code path invokes `ufw`/`iptables`/`nft` — firewall state is
-      confirmed untouched by `wganchor`.
-- [ ] Table ID / rule priority derivation is unit-tested for at least
-      instances 0 and 1, confirming distinct, deterministic values. Once
-      implemented, this formula is recorded in `docs/arch/wireguard.md` (or
-      `config-and-lifecycle.md`) as a durable design decision, not left
-      only as sprint-plan prose — it's new content beyond what the
-      bootstrap PoC's ad hoc single-instance values established, and
-      belongs in `docs/arch/` per CLAUDE.md's "update docs/arch if the
-      change affects architecture" step.
-- [ ] `relay_ips` with 2+ entries is exercised (unit tests for AllowedIPs
-      computation and the reconciliation diff at minimum; live re-validation
-      against the VPS with a single entry is sufficient for the
-      end-to-end check, since a second real relay IP isn't available to
-      test live in this sprint).
-- [ ] Pre-flight validation — missing `peer_endpoint` (client), empty
+      before and after, both roles).
+- [x] The `ip_forward` warning fires when unset — unit-tested
+      (`TestIPForwardEnabled`) against `ipForwardEnabled(path)`, a plain
+      function reading a given path rather than shelling out, specifically
+      so this doesn't require mutating the real sysctl.
+- [x] No code path invokes `ufw`/`iptables`/`nft` — confirmed by grepping
+      the implementation; firewall state is untouched by `wganchor`.
+- [x] Table ID / rule priority derivation is unit-tested
+      (`TestTableAndPriorityForInstanceAreDistinctAndMatchPoC`) for
+      instances 0 and 1. Recorded as a durable design decision in
+      `docs/arch/wireguard.md`'s new "Client-side policy routing" section.
+- [x] `relay_ips` with 2+ entries is exercised: unit-tested (AllowedIPs
+      computation, diff logic) and additionally live-tested against the
+      home machine using a synthetic second relay IP (not a real Vultr
+      secondary IP — just to exercise the address/rule bookkeeping) to
+      confirm both addition and later removal actually happen, beyond
+      what the plan originally called for.
+- [x] Pre-flight validation — missing `peer_endpoint` (client), empty
       `relay_ips` (both roles), and a malformed `relay_ips` entry — each
       fail fast with an actionable error before any system state changes,
       verified by unit test.
-- [ ] Reconciliation removes stale state for a relay IP dropped from
-      config (see "Idempotent startup reconciliation" test 2 above), and
-      does not touch routes/rules/addresses this instance did not create.
-- [ ] A name collision with a pre-existing, non-WireGuard interface at
+- [x] Reconciliation removes stale state for a relay IP dropped from
+      config, and does not touch routes/rules/addresses this instance did
+      not create — verified live (see the 2+ entry bullet above): adding
+      then removing a synthetic relay IP left only the real relay IP's
+      address/rule/route behind.
+- [x] A name collision with a pre-existing, non-WireGuard interface at
       `interface_name` fails with an actionable error rather than an
-      opaque downstream `wg set` failure.
+      opaque downstream `wg set` failure — verified live against the VPS
+      using a dummy (non-WireGuard) interface named `wganchor0`.
+
+**Revision during implementation, not anticipated in the original plan:**
+private key delivery to `wg set` uses `/dev/stdin`, not a `0600` temp file
+— see the "Interface creation" section above and
+`docs/arch/wireguard.md`'s "Keys" section for why (an AppArmor profile on
+the target VPS confines `wg` to `/etc/wireguard/` only).
