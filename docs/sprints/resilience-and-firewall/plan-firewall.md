@@ -5,6 +5,15 @@ the exact nftables table/chain/set layout) and the
 `project_home_machine_environment` memory (confirms nftables, not ufw,
 is the real enforcement point on the home machine).
 
+**Boundary with `plan-reconciliation-watch.md`**: `wganchor watch` never
+touches firewall state — it only reconciles `ip rule`/`ip route`/`ip
+addr` via the existing `Reconcile*Routes` functions. Firewall state is
+applied solely at `server`/`client` bring-up (Step 3, below) and by the
+`firewall` subcommands themselves; nothing re-diffs it on a timer the way
+the watcher does for routing. Worth stating explicitly since it's
+load-bearing for this plan's "nothing fights the operator between
+bring-ups" claim, not just true by omission.
+
 ## Goal
 
 Implement `wganchor firewall enable|allow|deny|disable`, and wire
@@ -96,7 +105,13 @@ actionable error" posture for malformed input).
 Preconditions: same `precheckLifecycle`-style root/`nft`-on-`PATH` checks
 as `install`/`uninstall` (`exec.LookPath("nft")` instead of
 `systemctl`) — reuse the pattern, not necessarily the exact function,
-since firewall commands don't need `systemctl` at all.
+since firewall commands don't need `systemctl` at all. **Exception:
+`firewall disable` does not require `nft`** — see "The durable opt-out on
+a host without `nft`" under Step 3; it only needs the instance's config
+to exist. All four subcommands require that config to exist in the first
+place (`configPathForInstance`, `lifecycle.go:23` — that's where the
+persisted intent this step reads/writes actually lives; an `allow` or
+`enable` against a nonexistent config has nowhere to record its intent).
 
 ## Step 3: default-on for a new interface, and surviving a reboot
 
@@ -135,9 +150,15 @@ FirewallAllowedPorts []string `json:"firewall_allowed_ports,omitempty"` // e.g. 
 - `firewall allow`/`deny` update **both** the live nftables state and
   this list (add/remove the `"<port>/<proto>"` string) — still imperative
   commands, still the only way to change the list; nothing times-based
-  reconciles it. `firewall disable` sets `DisableFirewall = true` and
-  clears the list; `firewall enable` (run explicitly, not via the
-  bring-up default-on path) sets `DisableFirewall = false`.
+  reconciles it. `firewall disable` sets `DisableFirewall = true`;
+  `firewall enable` (run explicitly, not via the bring-up default-on
+  path) sets `DisableFirewall = false`. Neither touches
+  `FirewallAllowedPorts` — `disable` does **not** clear the list. Since
+  `DisableFirewall = true` already makes the list inert (bring-up's
+  port-set convergence below is skipped whenever it's set), clearing it
+  on disable would only destroy data: a `disable` → `enable` round trip
+  would otherwise silently lose every port the operator had `allow`ed.
+  `deny` remains the only way to actually remove a port.
 - `server`/`client`'s bring-up (`main.go`'s `run()`), **on every
   invocation, not just first-time creation**: if `!cfg.DisableFirewall`,
   ensure the base scaffold exists (`ensureFirewallTable`/
@@ -206,8 +227,31 @@ Decision: **fail hard with an actionable error**, the same posture
 `precheckLifecycle` already applies to `install`/`uninstall` needing
 `systemctl` — silently proceeding with the tunnel open and unfirewalled
 would defeat the entire point of this feature, and would be a much worse
-failure mode than refusing to start. `--no-firewall` is the documented
-escape hatch for a host that genuinely can't run nftables.
+failure mode than refusing to start.
+
+`--no-firewall` handles this for a manually-run `server`/`client`
+invocation, but **not** for an installed instance: the systemd unit's
+`ExecStart` is baked from the template at install time with no way to
+carry a per-invocation flag, so an `nft`-less host running wganchor as a
+service has no way to pass `--no-firewall` to it. The durable opt-out
+(`firewall disable`, which persists `DisableFirewall = true`) is the path
+that must work here instead — see below.
+
+### The durable opt-out on a host without `nft`
+
+`firewall disable` must succeed even when `nft` is completely absent from
+the host: it's exempted from Step 2's `nft`-on-`PATH` precondition, and
+when `nft` isn't there, it skips the live teardown entirely (which
+`disableInstanceFirewall`'s existing "already gone" tolerance from Step 1
+covers for free — an absent `nft` looks the same as an absent table) and
+just sets `DisableFirewall = true` in the config. With that recorded,
+bring-up's `!cfg.DisableFirewall` check (below) skips the firewall
+scaffold entirely on every future invocation — including the installed
+unit's automatic restarts — so an `nft`-less host converges to "tunnel
+runs, no firewall" durably, without ever needing `nft` on `PATH` at all.
+This is the actual escape hatch for an installed, `nft`-less instance;
+`--no-firewall` is a convenience for a one-off manual invocation, not a
+substitute for it.
 
 This knowingly supersedes `plan-tunnel-runtime-COMPLETE.md`'s completed
 exit criterion "no code path invokes ufw/iptables/nft" — worth one line
@@ -259,11 +303,25 @@ cases exactly as it does today.
       recreated (simulate via `ip link delete` + re-running `server`/
       `client`, without needing an actual reboot); a `firewall disable`d
       instance stays open across the same simulated recreation.
+- [ ] A `disable` → `enable` round trip does not lose previously-`allow`ed
+      ports: `FirewallAllowedPorts` is untouched by `disable`, and
+      `enable` re-applies exactly what was recorded.
+- [ ] `firewall disable` succeeds with `nft` completely absent from
+      `PATH`, setting `DisableFirewall = true` without erroring; a
+      subsequent `server`/`client` invocation (simulating the installed
+      unit's automatic restart) then succeeds on the same `nft`-less host
+      because bring-up skips the firewall scaffold entirely.
+- [ ] All four `firewall` subcommands fail with an actionable error
+      against an instance with no config file, rather than silently
+      having nowhere to record intent.
 - [ ] `nft` missing from `PATH` (or `enable` otherwise failing) on
       `server`/`client`'s first run is a hard, actionable failure, not a
       silent partial success — verified no tunnel state is left half-
-      configured. `--no-firewall` avoids this failure entirely for a
-      host that can't run nftables.
+      configured. `--no-firewall` avoids this failure for a one-off
+      manual invocation; `firewall disable` (which works without `nft`,
+      per Step 3) is the durable opt-out for an installed, `nft`-less
+      instance, verified to let the installed unit's automatic restarts
+      succeed with no `nft` on `PATH` at all.
 - [ ] `uninstall --purge` removes that instance's firewall state, and is
       a graceful no-op (not an error) for an instance whose firewall was
       never enabled (server role, `--no-firewall`, or `nft` absent).

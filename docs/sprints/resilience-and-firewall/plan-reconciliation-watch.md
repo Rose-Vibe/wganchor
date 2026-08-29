@@ -7,8 +7,9 @@ changing their reconciliation logic.
 
 ## Goal
 
-Implement `wganchor watch <server|client> --instance N`: a new, opt-in,
-persistent companion process that detects and repairs the exact live bug
+Implement `wganchor watch <server|client> --instance N`: a new,
+on-by-default (`--no-watch` to opt out), persistent companion process
+that detects and repairs the exact live bug
 found this sprint (an externally-triggered `ip rule` flush silently
 breaking new inbound connections while `wg show` still looks healthy),
 via an event-driven watch plus a periodic backstop, logging only when it
@@ -230,19 +231,33 @@ This is a backward-compatible generalization of an existing helper, not
 a new one.
 
 **On by default**, matching `docs/arch/resilience.md`: `wganchor install
-<role> --instance N` writes/enables both the bring-up unit and this watch
-unit (reusing `writeUnitIfChanged`, `otherEnabledInstanceUnits`, etc. from
-`lifecycle.go` — the same per-instance-symlink-and-shared-template
-pattern already implemented, just for a second unit family). A new
-`--no-watch` flag on `install` skips installing/enabling the watch unit
-for an operator who wants the old, watcher-less behavior on purpose.
+<role> --instance N` writes and enables both the bring-up unit and this
+watch unit (reusing `writeUnitIfChanged`, `otherEnabledInstanceUnits`,
+etc. from `lifecycle.go` — the same per-instance-symlink-and-shared-
+template pattern already implemented, just for a second unit family). The
+watch unit must be enabled *before* `install`'s existing best-effort
+`systemctl start` of the bring-up unit — since starting the bring-up unit
+is what pulls the watcher up via `WantedBy=wganchor-<role>@%i.service`
+above, enabling it first means that first start already brings the
+watcher up too, with no separate `systemctl start` of the watch unit
+needed.
+
+A new `--no-watch` flag on `install` skips installing/enabling the watch
+unit for an operator who wants the old, watcher-less behavior on purpose.
 Since this only takes effect on `install`, an already-installed instance
 keeps its current behavior until it's reinstalled — this is not a
-behavior change injected into already-running instances. `uninstall`
-must always stop/disable/remove the watch unit for that instance if it
-was installed, regardless of whether `--no-watch` was passed at install
-time (mirroring the existing unit's handling exactly — uninstall doesn't
-need to know how it got there, just that it might be there).
+behavior change injected into already-running instances. On a
+**reinstall** of an instance that was previously installed with the
+watcher (the default), `--no-watch` stops, disables, and removes that
+instance's existing watch unit (and its shared template via the
+`removeTemplateIfUnused` pattern, if no other instance still uses it) —
+matching the project's "flags describe desired state" posture, rather
+than silently leaving a still-running watcher behind while the flag
+appears to have taken effect. `uninstall` must always stop/disable/remove
+the watch unit for that instance if it was installed, regardless of
+whether `--no-watch` was passed at install time (mirroring the existing
+unit's handling exactly — uninstall doesn't need to know how it got
+there, just that it might be there).
 
 ## Exit criteria
 
@@ -280,6 +295,10 @@ need to know how it got there, just that it might be there).
       finds watch-unit enablement symlinks under their per-instance
       `.wants/` directories, and still finds the bring-up unit's under
       `multi-user.target.wants/`.
+- [ ] Reinstalling a previously-watcher-enabled instance with `--no-watch`
+      stops, disables, and removes that instance's existing watch unit
+      (and the shared template if unused elsewhere) rather than leaving it
+      silently running.
 - [ ] Stopping and restarting the bring-up unit manually
       (`systemctl stop`/`start wganchor-<role>@N`) also stops and
       restarts its watcher, without a reboot.
