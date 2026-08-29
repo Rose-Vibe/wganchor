@@ -59,16 +59,34 @@ Both architecture docs are written; this sprint implements them.
 
 ## Exit criteria for the sprint
 
-- Both architecture docs' exit criteria (`docs/arch/resilience.md`,
-  `docs/arch/firewall.md`) are met and live-validated on the home
-  machine specifically — that's where both problems were found.
-- The hand-applied stopgap firewall is superseded by the real feature
-  (i.e. `wganchor firewall enable --instance 0` produces the same
-  ruleset the daemon now creates automatically, and survives a
-  re-install / restart of the bring-up service).
-- No regression to the already-shipped `server`/`client`/
-  `install`/`uninstall` behavior — `watch` and the default-on firewall
-  are additive; `--no-firewall` provides an escape hatch.
+- [x] Both architecture docs' exit criteria (`docs/arch/resilience.md`,
+      `docs/arch/firewall.md`) are met and live-validated on the home
+      machine specifically — that's where both problems were found.
+- [x] The hand-applied stopgap firewall is superseded by the real feature:
+      production instance 0 now runs the reviewed `firewall.go`
+      implementation via its actual systemd units
+      (`wganchor-client@0.service`, `wganchor-watch-client@0.service`),
+      not a hand-run `nft` script — verified by deploying the built
+      binary to `/usr/local/bin/wganchor` and restarting both units,
+      confirming the same default-deny ruleset re-applies automatically.
+- [x] No regression to the already-shipped `server`/`client`/
+      `install`/`uninstall` behavior — `watch` and the default-on firewall
+      are additive; `--no-firewall` provides an escape hatch. Verified via
+      the full test suite plus repeated idempotent live re-runs against
+      production instance 0 throughout both plans' implementation.
+
+## Outcome (closed 2026-08-29)
+
+Both plans implemented, reviewed (Fable for plan review, Opus for
+implementation review, iterated to approval), and committed:
+`74edd91` (reconciliation watch) and `28289bc` (firewall). The
+implementation review for the firewall plan caught two blocking exposure
+bugs before commit — the firewall being applied after the relay IP was
+already bound, and rule-presence matching that ignored `iifname` (so an
+`interface_name` change would have silently left the new interface
+unfiltered) — both fixed and re-verified live before shipping. See each
+plan's own exit-criteria checklist (now renamed `-COMPLETE.md`) for the
+full validation record.
 
 The normal CLAUDE.md autonomous pipeline applies throughout, stopping
 only for the standard exceptions (architectural conflict, irreversible
