@@ -70,6 +70,48 @@ or port can theoretically already be in use — but both clear the bar of
 "you'd have to deliberately pick the same unusual values to conflict,"
 rather than colliding with the common-case default setup.
 
+## Multiple interfaces: `wganchor0`, `wganchor1`, ... (naming reserved, not built)
+
+Numbering the interface (`wganchor0` implying a `wganchor1` is possible) is
+deliberate, but it's reserved for one specific scaling need, not "more
+relay IPs" in general:
+
+- **More relay IPs through the same tunnel** (e.g. a second Vultr secondary
+  IP relayed to the same home machine) does **not** need a second
+  interface. WireGuard peers already support multiple `AllowedIPs` — a
+  second relay IP is just another route plus another `AllowedIPs` entry on
+  the existing peer on `wganchor0`. (Vultr also caps additional IPs at 2
+  per instance, so this ceiling is small regardless — see
+  `plan-research.md`.)
+- **A second, independent tunnel relationship** — e.g. a second, unrelated
+  VPS acting as its own relay provider, with its own keypair and
+  endpoint — is what `wganchor1` is for. That's a genuinely separate
+  thing, not a bigger version of the first.
+
+Decided now, to keep a future second instance purely additive (no
+migration of what's already decided for the single-instance case):
+
+- No `--instance` flag / today's default behavior is `N=0`: interface
+  `wganchor0`, config at `/etc/wganchor/config.json` (or the XDG
+  equivalent), default `listen_port` `60217`. Unchanged from above.
+- A future `--instance <N>` flag (`N` ≥ 1) would use a sibling config file
+  `/etc/wganchor/<N>.json` (not nested under the default's path), default
+  `listen_port` `60217 + N` (still overridable, still needs the
+  collision check from `plan-environment.md`), and interface `wganchor<N>`.
+- Systemd lifecycle (`config-and-lifecycle.md`) keeps the flat
+  `wganchor-server.service` / `wganchor-client.service` units for the
+  default instance; multi-instance would add templated
+  `wganchor-server@.service` / `wganchor-client@.service` units used only
+  for `N` ≥ 1, rather than changing the existing units' names.
+
+None of the `--instance` flag, per-instance config directory, or templated
+systemd units are being built in the bootstrap sprint — there's no second
+VPS in scope yet, and building unused multi-instance plumbing now is
+exactly the kind of speculative feature CLAUDE.md's conventions argue
+against. What's decided here is only the naming/path *shape*, so that
+adding real multi-instance support later is additive rather than a
+breaking change to the single-instance layout this sprint builds.
+
 ## Keys
 
 Generated the same way: `wg genkey` / `wg pubkey`, shelled out — no
@@ -139,6 +181,10 @@ specifically to make additive schema growth cheap.
 - [x] Interface/peer management approach decided: shell out to `ip`/`wg`.
 - [x] Interface name decided: `wganchor0` (not `wg0`), overridable.
 - [x] Default listen port decided: `60217` (not `51820`), overridable.
+- [x] Multi-interface naming reserved (`wganchor0`, `wganchor1`, ...) for
+      independent tunnel relationships; multiple relay IPs on one tunnel
+      use peer `AllowedIPs` instead. Not implemented — naming/path shape
+      only, kept additive for later.
 - [x] Key generation approach decided: shell out to `wg genkey`/`wg pubkey`,
       self-provisioned on first run.
 - [x] `PersistentKeepalive` interval decided: 25s, home side only.

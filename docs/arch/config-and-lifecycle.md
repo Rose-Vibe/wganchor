@@ -104,3 +104,9 @@ work, so the subcommand surface doesn't need reworking later.
   execution is a later hardening pass, not a blocker.
 - Live status/control socket: deferred, `wg show` already covers basic
   status independent of this tool.
+- Multiple independent tunnel instances (`--instance <N>`, sibling config
+  files, templated `wganchor-server@.service`/`wganchor-client@.service`
+  units): naming/path shape reserved in `docs/arch/wireguard.md`, not
+  implemented. The single-instance layout above (`wganchor0`,
+  `/etc/wganchor/config.json`, flat unit names) is what `N=0`/no-flag
+  resolves to, so adding this later doesn't change anything decided here.
