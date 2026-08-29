@@ -279,19 +279,19 @@ there, just that it might be there).
 
 ## Exit criteria
 
-- [ ] `buildReconcileResult` and `hasDefaultRoute` are unit-tested
+- [x] `buildReconcileResult` and `hasDefaultRoute` are unit-tested
       directly (pure functions, no `runCmd` involved); `shouldTrigger` is
       unit-tested against captured real `ip monitor rule` output,
       including a case confirming an unrelated table/priority does *not*
       trigger, and a case confirming its parse-failure signal fires (not
       just silence) for a `Deleted` line matching this instance's
       priority but with an unparsable/missing table field.
-- [ ] `wganchor watch` detects an externally-deleted `ip rule` for its
+- [x] `wganchor watch` detects an externally-deleted `ip rule` for its
       own instance within a few seconds and repairs it, including the
       case where the table's default route was dropped along with the
       rule (verifying the `hasDefaultRoute` fix — that repair is reported
       and logged, not silently absorbed).
-- [ ] `wganchor watch` still repairs drift via the periodic backstop for
+- [x] `wganchor watch` still repairs drift via the periodic backstop for
       a drift type the event path structurally cannot see — the table's
       default route being deleted directly (not just the `ip rule`
       pointing at it) is exactly such a case, and doesn't require
@@ -299,24 +299,28 @@ there, just that it might be there).
       used for this test on a production instance — it can break already-
       open sockets bound to that address; rule/route-table drift only
       affects new inbound connections.)
-- [ ] A reconcile runs at watcher startup and after each `ip monitor
+- [x] A reconcile runs at watcher startup and after each `ip monitor
       rule` subprocess restart, not only on events/the periodic tick.
-- [ ] The `ip monitor rule` subprocess dying *or failing to even start*
+- [x] The `ip monitor rule` subprocess dying *or failing to even start*
       (e.g. `ip` temporarily missing from `PATH`) is detected and
       retried with a capped exponential backoff, without the watch
       process exiting; the backoff only resets after a run has stayed up
       for a while, so a subprocess that starts but crash-loops instantly
-      still backs off instead of retrying every second forever.
-- [ ] Only actual repairs are logged; routine periodic checks that find
+      still backs off instead of retrying every second forever. (Fixed
+      during implementation review — the original draft treated a
+      `Start`/`StdoutPipe` failure as fatal to the whole process.)
+- [x] Only actual repairs are logged; routine periodic checks that find
       nothing to fix are not.
-- [ ] A config that fails to load (e.g. file deleted) *or fails
+- [x] A config that fails to load (e.g. file deleted) *or fails
       `ValidateConfig`* (e.g. `relay_ips` empty/null mid-edit) is logged
       and does not stop the watch process, and — critically — does not
       reach a `Reconcile*Routes` call at all: verified that an instance
       with a momentarily-invalid config keeps its live addresses/rules
       untouched rather than having the watcher delete them as "no longer
-      desired."
-- [ ] `install` / `uninstall` correctly manage the new per-instance watch
+      desired." (This was the implementation review's one blocking
+      finding on first pass — `reconcileOnce` was missing the
+      `ValidateConfig` call `run()` already made — fixed and re-verified.)
+- [x] `install` / `uninstall` correctly manage the new per-instance watch
       unit by default, without affecting the existing bring-up unit's
       behavior; `--no-watch` at install time skips it, and an
       already-installed instance's behavior is unaffected until it's
@@ -324,14 +328,14 @@ there, just that it might be there).
       finds watch-unit enablement symlinks under their per-instance
       `.wants/` directories, and still finds the bring-up unit's under
       `multi-user.target.wants/`.
-- [ ] Reinstalling a previously-watcher-enabled instance with `--no-watch`
+- [x] Reinstalling a previously-watcher-enabled instance with `--no-watch`
       stops, disables, and removes that instance's existing watch unit
       (and the shared template if unused elsewhere) rather than leaving it
       silently running.
-- [ ] Stopping and restarting the bring-up unit manually
+- [x] Stopping and restarting the bring-up unit manually
       (`systemctl stop`/`start wganchor-<role>@N`) also stops and
       restarts its watcher, without a reboot.
-- [ ] Live-validated on the home machine specifically, with a short
+- [x] Live-validated on the home machine specifically, with a short
       `--interval` (e.g. 15s, not the 5-minute default) so any deliberate
       breakage window on the real production instance stays bounded to
       seconds: deliberately delete production instance 0's `ip rule` by
