@@ -58,15 +58,123 @@ func ensureFirewallTable() error {
 }
 
 // ensureInstanceSets idempotently creates instance's tcp/udp allowed-port
-// sets if absent. `nft add set` is a no-op if the set already exists.
+// sets if absent, with `flags interval` so they can hold a range element
+// like `{ 8000-8010 }` as well as an ordinary single-port element like
+// `{ 8080 }` — confirmed empirically (plan-firewall-port-specs.md's
+// step-0 spike) that an interval-flagged set accepts both shapes
+// transparently, with a single port read back as a bare integer, not a
+// length-1 range, so no config migration is needed for existing
+// single-port entries. `nft add set` is a no-op if the set already
+// exists with identical content. A set that already exists *without*
+// this flag (created by a wganchor binary predating this change) is not
+// touched here — see migrateStaleInstanceSets, which must run first.
 func ensureInstanceSets(instance int) error {
 	for _, proto := range []string{"tcp", "udp"} {
 		if _, err := runCmd("nft", "add", "set", "ip", firewallTable, instanceSetName(instance, proto),
-			"{ type inet_service; }"); err != nil {
+			"{ type inet_service; flags interval; }"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// setListingLacksIntervalFlag reports whether an `nft list set` listing
+// predates the flags-interval schema change — extracted as a plain
+// string predicate (mirroring isNftAbsentOutput) so setNeedsMigration's
+// detection logic is directly unit-testable against a synthetic listing,
+// with no `nft` invocation needed in tests.
+func setListingLacksIntervalFlag(listing string) bool {
+	return !strings.Contains(listing, "flags interval")
+}
+
+// setNeedsMigration reports whether instance's proto set exists but
+// predates the flags-interval schema change. A brand-new or altogether
+// absent set (`nft list set` failing with isNftAbsentOutput) is not
+// stale — there's nothing to migrate, ensureInstanceSets will create it
+// correctly from scratch.
+func setNeedsMigration(instance int, proto string) (bool, error) {
+	listing, err := runCmd("nft", "list", "set", "ip", firewallTable, instanceSetName(instance, proto))
+	if err != nil {
+		if isNftAbsentOutput(err.Error()) {
+			return false, nil
+		}
+		return false, err
+	}
+	return setListingLacksIntervalFlag(listing), nil
+}
+
+// migrateStaleInstanceSets deletes any of instance's tcp/udp sets that
+// predate the flags-interval schema change, so a subsequent
+// ensureInstanceSets call recreates them correctly, and reports whether
+// it actually migrated anything (migrated == false is a true no-op: no
+// stale set existed — including the ordinary "firewall never enabled for
+// this instance" case — so nothing was touched). Callers that already
+// unconditionally call ensureInstanceSets/ensureInstanceBaseRules right
+// after this (ensureFirewallScaffold) can ignore the return value; a
+// caller that does NOT otherwise recreate the scaffold (FirewallDeny)
+// must check it and recreate only when true — recreating unconditionally
+// would turn a `deny` against a never-enabled or explicitly `disable`d
+// instance into an unwanted scaffold-creation side effect, since
+// ensureInstanceSets/ensureInstanceBaseRules would then build a fresh
+// table/sets/rules from nothing.
+//
+// Only if at least one set actually needs migrating does this also
+// delete all 4 of instance's base rules first — not just the rule(s)
+// referencing the migrating set(s). `nft add rule` (used by
+// ensureInstanceBaseRules) only ever appends at the chain tail, with no
+// "insert before" by comment (see ensureInstanceBaseRules's own
+// comment): deleting only the affected proto's rule and letting it be
+// re-added later would land the re-added accept rule *after* the
+// still-present terminating drop rule, making it permanently dead and
+// every previously-allowed port on that proto unreachable. Reusing
+// ruleHandlesForInstance (the same full-teardown lookup
+// disableInstanceFirewall already uses) to delete all 4 avoids that.
+// This briefly leaves the instance's interface completely unfiltered
+// (chain policy is accept) until the caller's ensureInstanceBaseRules
+// call re-adds all 4 rules moments later — the same non-atomic-command
+// tradeoff disableInstanceFirewall's own teardown already carries, now
+// also reachable from an ordinary allow/deny/enable/bring-up, not just
+// an explicit disable.
+func migrateStaleInstanceSets(instance int) (migrated bool, err error) {
+	stale := make(map[string]bool, 2)
+	anyStale := false
+	for _, proto := range []string{"tcp", "udp"} {
+		s, err := setNeedsMigration(instance, proto)
+		if err != nil {
+			return false, err
+		}
+		stale[proto] = s
+		if s {
+			anyStale = true
+		}
+	}
+	if !anyStale {
+		return false, nil
+	}
+
+	listing, err := runCmd("nft", "-a", "list", "chain", "ip", firewallTable, "input")
+	if err != nil {
+		if !isNftAbsentOutput(err.Error()) {
+			return false, err
+		}
+		listing = ""
+	}
+	for _, handle := range ruleHandlesForInstance(listing, instance) {
+		if err := runNftTolerant("delete", "rule", "ip", firewallTable, "input",
+			"handle", strconv.Itoa(handle)); err != nil {
+			return false, err
+		}
+	}
+
+	for _, proto := range []string{"tcp", "udp"} {
+		if !stale[proto] {
+			continue
+		}
+		if err := runNftTolerant("delete", "set", "ip", firewallTable, instanceSetName(instance, proto)); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // existingInstanceBaseRuleKinds reports which of instance's 4 base rule
@@ -187,14 +295,31 @@ func ensureInstanceBaseRules(name string, instance int) error {
 
 // isNftAbsentOutput reports whether combined `nft` output indicates
 // "this element/rule/set/table doesn't exist" rather than a real
-// failure — confirmed empirically: nft reports a missing target as "No
-// such file or directory", the same predicate style as
+// failure — confirmed empirically: nft reports a missing table/set/rule
+// as "No such file or directory", the same predicate style as
 // isUnitNotInstalledOutput (lifecycle.go) for systemctl's equivalent
-// "already in the state you wanted" case. Deliberately does NOT match
-// "Device or resource busy" (nft's error when deleting a set a rule
-// still references) — that's a real ordering bug, not a no-op.
+// "already in the state you wanted" case.
+//
+// A missing *element* in an interval-flagged set (flags interval, added
+// by plan-firewall-port-specs.md) is reported differently — "element
+// does not exist" — confirmed empirically and caught in implementation
+// review: without this second match, `denyPortRange` against an
+// already-absent element (the ordinary "deny a port that isn't allowed"
+// no-op, or denying a sub-range that doesn't exactly match an allowed
+// range, both explicitly documented as no-ops in docs/arch/firewall.md
+// and README.md) would return this as a hard error instead. This also
+// covers the exact same "element does not exist" wording nft uses for a
+// non-matching sub-range delete against a real range element (e.g.
+// deleting `{ 8005 }` from a set holding `8000-8010`), which is exactly
+// the no-op the docs promise.
+//
+// Deliberately does NOT match "Device or resource busy" (nft's error
+// when deleting a set a rule still references) — that's a real ordering
+// bug, not a no-op.
 func isNftAbsentOutput(output string) bool {
-	return strings.Contains(strings.ToLower(output), "no such file or directory")
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "no such file or directory") ||
+		strings.Contains(lower, "element does not exist")
 }
 
 // runNftTolerant runs an nft command, treating "target already absent"
@@ -211,20 +336,38 @@ func runNftTolerant(args ...string) error {
 	return err
 }
 
-// allowPort adds port/proto to instance's allowed-port set. `nft add
-// element` is a no-op if the element is already present.
-func allowPort(instance int, port int, proto string) error {
+// portRangeElement builds the nft element literal for [start, end]: a
+// single port (`{ <port> }`) when start == end, a range (`{ <start>-<end>
+// }`) otherwise — both accepted transparently by an interval-flagged set
+// (see ensureInstanceSets).
+func portRangeElement(start, end int) string {
+	if start == end {
+		return fmt.Sprintf("{ %d }", start)
+	}
+	return fmt.Sprintf("{ %d-%d }", start, end)
+}
+
+// allowPortRange adds [start, end]/proto to instance's allowed-port set.
+// `nft add element` is a no-op if the element is already present. Adding
+// a range that overlaps an already-present element is rejected by `nft`
+// itself with "interval overlaps with an existing one" (confirmed
+// empirically) — surfaced as-is via runCmd's error formatting, not
+// specially handled: overlap detection/merging is out of scope (see
+// plan-firewall-port-specs.md's Non-goals).
+func allowPortRange(instance, start, end int, proto string) error {
 	_, err := runCmd("nft", "add", "element", "ip", firewallTable, instanceSetName(instance, proto),
-		fmt.Sprintf("{ %d }", port))
+		portRangeElement(start, end))
 	return err
 }
 
-// denyPort removes port/proto from instance's allowed-port set,
-// tolerating "already absent" as success (unlike `add`, `nft delete
-// element` errors on an absent element).
-func denyPort(instance int, port int, proto string) error {
+// denyPortRange removes [start, end]/proto from instance's allowed-port
+// set, tolerating "already absent" as success (unlike `add`, `nft delete
+// element` errors on an absent element). Exact-element-match only: a
+// deny for a sub-range of a previously-allowed wider range is a no-op,
+// not a partial split (see plan-firewall-port-specs.md's Non-goals).
+func denyPortRange(instance, start, end int, proto string) error {
 	return runNftTolerant("delete", "element", "ip", firewallTable, instanceSetName(instance, proto),
-		fmt.Sprintf("{ %d }", port))
+		portRangeElement(start, end))
 }
 
 // ruleHandlesForInstance returns the nft rule handles (from `nft -a
@@ -324,17 +467,23 @@ func ensureFirewallScaffold(name string, instance int) error {
 	if err := ensureFirewallTable(); err != nil {
 		return err
 	}
+	if _, err := migrateStaleInstanceSets(instance); err != nil {
+		return err
+	}
 	if err := ensureInstanceSets(instance); err != nil {
 		return err
 	}
 	return ensureInstanceBaseRules(name, instance)
 }
 
-// parseSetElements extracts the port numbers from `nft list set`'s
-// "elements = { ... }" line — absent entirely for an empty set (an
-// empty set's listing has no "elements" line at all, confirmed
-// empirically).
-func parseSetElements(listing string) []int {
+// parseSetElements extracts the port-or-range tokens ("8080" or
+// "8000-8010") from `nft list set`'s "elements = { ... }" line as raw
+// strings — absent entirely for an empty set (an empty set's listing has
+// no "elements" line at all, confirmed empirically). Returning strings
+// rather than []int lets currentAllowedPorts append "/<proto>" uniformly
+// to either shape, matching the exact "%d/%s" / "%d-%d/%s" format
+// formatPortSpec produces.
+func parseSetElements(listing string) []string {
 	idx := strings.Index(listing, "elements = {")
 	if idx == -1 {
 		return nil
@@ -344,20 +493,21 @@ func parseSetElements(listing string) []int {
 	if end == -1 {
 		return nil
 	}
-	var ports []int
+	var tokens []string
 	for _, tok := range strings.Split(rest[:end], ",") {
-		if p, err := strconv.Atoi(strings.TrimSpace(tok)); err == nil {
-			ports = append(ports, p)
+		if tok = strings.TrimSpace(tok); tok != "" {
+			tokens = append(tokens, tok)
 		}
 	}
-	return ports
+	return tokens
 }
 
 // currentAllowedPorts reads instance's live tcp/udp sets and returns
-// them as "<port>/<proto>" strings, the same shape FirewallAllowedPorts
-// persists. An absent set (firewall never enabled yet) is treated as
-// empty, not an error, since applyFirewallAllowedPorts calls this before
-// ensureFirewallScaffold is guaranteed to have run.
+// them as "<port>/<proto>" or "<start>-<end>/<proto>" strings, the same
+// shape FirewallAllowedPorts persists. An absent set (firewall never
+// enabled yet) is treated as empty, not an error, since
+// applyFirewallAllowedPorts calls this before ensureFirewallScaffold is
+// guaranteed to have run.
 func currentAllowedPorts(instance int) ([]string, error) {
 	var specs []string
 	for _, proto := range []string{"tcp", "udp"} {
@@ -368,8 +518,8 @@ func currentAllowedPorts(instance int) ([]string, error) {
 			}
 			return nil, err
 		}
-		for _, port := range parseSetElements(listing) {
-			specs = append(specs, fmt.Sprintf("%d/%s", port, proto))
+		for _, tok := range parseSetElements(listing) {
+			specs = append(specs, fmt.Sprintf("%s/%s", tok, proto))
 		}
 	}
 	return specs, nil
@@ -389,46 +539,97 @@ func applyFirewallAllowedPorts(instance int, desired []string) error {
 	}
 	toAdd, toRemove := diffRelayIPs(desired, current)
 	for _, spec := range toRemove {
-		port, proto, err := parsePortSpec(spec)
+		start, end, proto, err := parsePortSpec(spec)
 		if err != nil {
 			// Unreachable in practice: every entry in current came from
-			// currentAllowedPorts's own fmt.Sprintf("%d/%s", ...), which
+			// currentAllowedPorts's own fmt.Sprintf("%s/%s", ...), which
 			// always round-trips through parsePortSpec. Kept as a guard
 			// rather than a panic in case that invariant ever changes.
 			continue
 		}
-		if err := denyPort(instance, port, proto); err != nil {
+		if err := denyPortRange(instance, start, end, proto); err != nil {
 			return err
 		}
 	}
 	for _, spec := range toAdd {
-		port, proto, err := parsePortSpec(spec)
+		start, end, proto, err := parsePortSpec(spec)
 		if err != nil {
 			return fmt.Errorf("firewall_allowed_ports entry: %w", err)
 		}
-		if err := allowPort(instance, port, proto); err != nil {
+		if err := allowPortRange(instance, start, end, proto); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// parsePortSpec parses a "<port>/<tcp|udp>" spec (e.g. "8080/tcp"),
-// rejecting anything else with an actionable error — matches
-// validate.go's existing fail-fast posture for malformed input.
-func parsePortSpec(spec string) (port int, proto string, err error) {
+// parsePortSpec parses "<port>/<tcp|udp>" (e.g. "8080/tcp") or
+// "<start>-<end>/<tcp|udp>" (e.g. "8000-8010/tcp"), rejecting anything
+// else with an actionable error — matches validate.go's existing
+// fail-fast posture for malformed input. A single port normalizes to
+// start == end, so every downstream consumer (allowPortRange,
+// currentAllowedPorts, ...) handles both shapes uniformly with no
+// separate single-port code path. "both" is never a valid proto here —
+// expandBothProto handles it at the CLI layer before a spec ever reaches
+// this function.
+func parsePortSpec(spec string) (start, end int, proto string, err error) {
 	parts := strings.SplitN(spec, "/", 2)
 	if len(parts) != 2 {
-		return 0, "", fmt.Errorf("invalid port spec %q: want <port>/<tcp|udp>, e.g. 8080/tcp", spec)
-	}
-	port, convErr := strconv.Atoi(parts[0])
-	if convErr != nil || port < 1 || port > 65535 {
-		return 0, "", fmt.Errorf("invalid port spec %q: port must be an integer between 1 and 65535", spec)
+		return 0, 0, "", fmt.Errorf("invalid port spec %q: want <port>/<tcp|udp> or <start>-<end>/<tcp|udp>, e.g. 8080/tcp or 8000-8010/tcp", spec)
 	}
 	if parts[1] != "tcp" && parts[1] != "udp" {
-		return 0, "", fmt.Errorf("invalid port spec %q: protocol must be tcp or udp", spec)
+		return 0, 0, "", fmt.Errorf("invalid port spec %q: protocol must be tcp or udp", spec)
 	}
-	return port, parts[1], nil
+	proto = parts[1]
+
+	if lo, hi, isRange := strings.Cut(parts[0], "-"); isRange {
+		start, err = strconv.Atoi(lo)
+		if err != nil {
+			return 0, 0, "", fmt.Errorf("invalid port spec %q: range start must be an integer", spec)
+		}
+		end, err = strconv.Atoi(hi)
+		if err != nil {
+			return 0, 0, "", fmt.Errorf("invalid port spec %q: range end must be an integer", spec)
+		}
+	} else {
+		start, err = strconv.Atoi(parts[0])
+		if err != nil {
+			return 0, 0, "", fmt.Errorf("invalid port spec %q: port must be an integer between 1 and 65535", spec)
+		}
+		end = start
+	}
+	if start < 1 || start > 65535 || end < 1 || end > 65535 {
+		return 0, 0, "", fmt.Errorf("invalid port spec %q: ports must be between 1 and 65535", spec)
+	}
+	if start > end {
+		return 0, 0, "", fmt.Errorf("invalid port spec %q: range start must be <= end", spec)
+	}
+	return start, end, proto, nil
+}
+
+// formatPortSpec is parsePortSpec's inverse: the canonical
+// "<port>/<proto>" or "<start>-<end>/<proto>" string persisted to
+// FirewallAllowedPorts and compared against in
+// applyFirewallAllowedPorts's diffing. A single port's representation
+// (start == end) is byte-for-byte unchanged from before ranges existed,
+// so no config migration is needed for existing entries.
+func formatPortSpec(start, end int, proto string) string {
+	if start == end {
+		return fmt.Sprintf("%d/%s", start, proto)
+	}
+	return fmt.Sprintf("%d-%d/%s", start, end, proto)
+}
+
+// expandBothProto returns spec unchanged, or — if spec ends in "/both" —
+// the equivalent ["<base>/tcp", "<base>/udp"] pair. Pure, CLI-layer
+// only: "both" is never a value parsePortSpec, FirewallAllowedPorts, or
+// any nft set element ever needs to understand.
+func expandBothProto(spec string) []string {
+	base, ok := strings.CutSuffix(spec, "/both")
+	if !ok {
+		return []string{spec}
+	}
+	return []string{base + "/tcp", base + "/udp"}
 }
 
 // nftAvailable reports whether nft is on PATH — used by main.go's client
@@ -475,12 +676,15 @@ func precheckFirewallCmd(instance int, requireNft bool) (cfg *Config, path strin
 
 // firewallInterfaceName resolves cfg's interface name, falling back to
 // the per-instance default the same way main.go's run() and watch.go's
-// reconcileOnce already do.
+// reconcileOnce already do. A thin wrapper around resolveRuntimeDefaults
+// (config.go) — kept as a separate, name-only function since most
+// firewall.go call sites have no use for the resolved listen port, but
+// delegating avoids a second copy of the same fallback logic drifting
+// out of sync (the exact risk this plan's validateRelayIP extraction was
+// written to avoid elsewhere), caught in implementation review.
 func firewallInterfaceName(cfg *Config, instance int) string {
-	if cfg.InterfaceName != "" {
-		return cfg.InterfaceName
-	}
-	return defaultInterfaceName(instance)
+	name, _ := resolveRuntimeDefaults(cfg, instance)
+	return name
 }
 
 // FirewallEnable idempotently ensures instance's firewall scaffold
@@ -547,7 +751,7 @@ func removePortSpec(list []string, spec string) ([]string, bool) {
 // turn firewalling back on for an instance that was `disable`d or never
 // brought up — otherwise an `allow` right after a `disable`, or before
 // the instance's first bring-up, would silently do nothing live.
-func FirewallAllow(instance, port int, proto string) error {
+func FirewallAllow(instance, start, end int, proto string) error {
 	cfg, path, err := precheckFirewallCmd(instance, true)
 	if err != nil {
 		return err
@@ -555,7 +759,7 @@ func FirewallAllow(instance, port int, proto string) error {
 	if err := ensureFirewallScaffold(firewallInterfaceName(cfg, instance), instance); err != nil {
 		return err
 	}
-	spec := fmt.Sprintf("%d/%s", port, proto)
+	spec := formatPortSpec(start, end, proto)
 	newList, listChanged := addPortSpec(cfg.FirewallAllowedPorts, spec)
 	// Converge the whole recorded list (not just add this one port) for
 	// the same reason FirewallEnable does: if the scaffold was just
@@ -576,16 +780,67 @@ func FirewallAllow(instance, port int, proto string) error {
 }
 
 // FirewallDeny removes port/proto from instance's live allowed-port set
-// and its persisted record.
-func FirewallDeny(instance, port int, proto string) error {
+// and its persisted record. Runs migrateStaleInstanceSets first, not the
+// full ensureFirewallScaffold FirewallAllow/FirewallEnable use — deny
+// must stay a true no-op against an instance that was never enabled or
+// was explicitly disabled. migrateStaleInstanceSets is itself a no-op
+// when no set is stale (including the ordinary "never enabled" case,
+// since an absent set is never "stale"), but a range deny against a set
+// that predates the flags-interval schema does need migrating first:
+// `nft delete element` against a non-interval set for a range spec fails
+// outright ("You must add 'flags interval' to your set declaration"),
+// which would make `deny` unable to ever remove such an entry — caught
+// in implementation review. When migration actually happens here, it
+// tears down the (already-existing, since a stale set only exists inside
+// an already-created table) sets/base rules — ensureInstanceSets/
+// ensureInstanceBaseRules restore exactly what was just torn down,
+// completing the migration rather than leaving the instance
+// unexpectedly unfiltered until some later call happens to do it. This
+// is why the recreation is conditional on `migrated`, not unconditional
+// like ensureFirewallScaffold's: unconditionally recreating would turn a
+// `deny` against a never-enabled/disabled instance into an unwanted
+// scaffold-creation side effect.
+//
+// migrateStaleInstanceSets's set deletion also empties out whatever was
+// previously allowed on the migrating set(s) — confirmed live while
+// verifying this fix: a deny that happens to trigger migration on a set
+// with other, unrelated ports already allowed on it would otherwise
+// silently drop them, which is a worse outcome than the bug being fixed.
+// applyFirewallAllowedPorts(instance, cfg.FirewallAllowedPorts) restores
+// them from the still-current persisted record (not yet touched at this
+// point — the entry actually being denied is removed from it below,
+// after the live nft deletion succeeds) before the deny itself proceeds.
+func FirewallDeny(instance, start, end int, proto string) error {
 	cfg, path, err := precheckFirewallCmd(instance, true)
 	if err != nil {
 		return err
 	}
-	if err := denyPort(instance, port, proto); err != nil {
+	migrated, err := migrateStaleInstanceSets(instance)
+	if err != nil {
 		return err
 	}
-	spec := fmt.Sprintf("%d/%s", port, proto)
+	// Gated on !cfg.DisableFirewall (nit from implementation review): a
+	// disabled instance's stale sets can survive FirewallDisable's own
+	// teardown in one narrow case (nft was missing when disable ran, so
+	// the live teardown was skipped entirely — see FirewallDisable). If
+	// nft later reappears and `deny` happens to run against such an
+	// instance, migration must still not resurrect a filtered scaffold
+	// the operator explicitly disabled; leave the stale set(s) as-is.
+	if migrated && !cfg.DisableFirewall {
+		if err := ensureInstanceSets(instance); err != nil {
+			return err
+		}
+		if err := ensureInstanceBaseRules(firewallInterfaceName(cfg, instance), instance); err != nil {
+			return err
+		}
+		if err := applyFirewallAllowedPorts(instance, cfg.FirewallAllowedPorts); err != nil {
+			return err
+		}
+	}
+	if err := denyPortRange(instance, start, end, proto); err != nil {
+		return err
+	}
+	spec := formatPortSpec(start, end, proto)
 	newList, changed := removePortSpec(cfg.FirewallAllowedPorts, spec)
 	if !changed {
 		return nil

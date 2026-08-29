@@ -26,6 +26,33 @@ func TestInstanceDefaultsAreDistinct(t *testing.T) {
 	}
 }
 
+// TestResolveRuntimeDefaultsFillsBlankAndZero guards the fix that came
+// out of relay-management's implementation review: liveApplyRelay
+// (relay.go) must resolve BOTH the interface name and the listen port
+// via this function before touching live state, not just the interface
+// name — a config that omits listen_port is legal (wireguard.md) and,
+// if the zero value reached ConfigureInterface directly, would silently
+// rebind WireGuard to a random ephemeral port instead of the documented
+// default.
+func TestResolveRuntimeDefaultsFillsBlankAndZero(t *testing.T) {
+	cfg := &Config{}
+	name, port := resolveRuntimeDefaults(cfg, 4321)
+	if name != "wganchor4321" {
+		t.Fatalf("expected the default interface name for a blank interface_name, got %q", name)
+	}
+	if port != 64538 {
+		t.Fatalf("expected the default listen port (60217+4321) for a zero listen_port, got %d", port)
+	}
+}
+
+func TestResolveRuntimeDefaultsPreservesExplicitValues(t *testing.T) {
+	cfg := &Config{InterfaceName: "custom0", ListenPort: 9999}
+	name, port := resolveRuntimeDefaults(cfg, 0)
+	if name != "custom0" || port != 9999 {
+		t.Fatalf("expected explicit config values to be preserved, got (%q, %d)", name, port)
+	}
+}
+
 func TestResolveConfigPathExplicitMustExist(t *testing.T) {
 	_, _, err := resolveConfigPath(filepath.Join(t.TempDir(), "missing.json"), 0)
 	if err == nil {

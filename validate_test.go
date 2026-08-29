@@ -90,3 +90,22 @@ func TestValidateConfigRejectsDuplicateRelayIP(t *testing.T) {
 		t.Fatal("expected an error for a duplicate relay IP")
 	}
 }
+
+// TestValidateRelayIP guards the extraction relay.go's RelayAdd/RelayRemove
+// depend on: ValidateConfig's own tests above must keep passing unmodified
+// against this extracted version, proving the extraction didn't change its
+// behavior; this test covers validateRelayIP directly, standalone.
+func TestValidateRelayIP(t *testing.T) {
+	if err := validateRelayIP("203.0.113.20"); err != nil {
+		t.Fatalf("expected a valid IPv4 to pass, got %v", err)
+	}
+	if err := validateRelayIP("2001:db8::1"); err == nil {
+		t.Fatal("expected an error for an IPv6 address (unsupported)")
+	}
+	if err := validateRelayIP("not-an-ip"); err == nil {
+		t.Fatal("expected an error for garbage input")
+	}
+	if err := validateRelayIP(""); err == nil {
+		t.Fatal("expected an error for an empty string")
+	}
+}

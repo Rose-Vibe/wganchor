@@ -162,21 +162,25 @@ func TestAnyOtherInstanceRuleRemainsNoneLeft(t *testing.T) {
 func TestParsePortSpecValid(t *testing.T) {
 	cases := []struct {
 		spec      string
-		wantPort  int
+		wantStart int
+		wantEnd   int
 		wantProto string
 	}{
-		{"8080/tcp", 8080, "tcp"},
-		{"53/udp", 53, "udp"},
-		{"1/tcp", 1, "tcp"},
-		{"65535/udp", 65535, "udp"},
+		{"8080/tcp", 8080, 8080, "tcp"},
+		{"53/udp", 53, 53, "udp"},
+		{"1/tcp", 1, 1, "tcp"},
+		{"65535/udp", 65535, 65535, "udp"},
+		{"8000-8010/tcp", 8000, 8010, "tcp"},
+		{"1-65535/udp", 1, 65535, "udp"},
+		{"22-22/tcp", 22, 22, "tcp"}, // a degenerate range is legal, normalizes like a single port
 	}
 	for _, c := range cases {
-		port, proto, err := parsePortSpec(c.spec)
+		start, end, proto, err := parsePortSpec(c.spec)
 		if err != nil {
 			t.Fatalf("parsePortSpec(%q): unexpected error: %v", c.spec, err)
 		}
-		if port != c.wantPort || proto != c.wantProto {
-			t.Fatalf("parsePortSpec(%q) = (%d, %q), want (%d, %q)", c.spec, port, proto, c.wantPort, c.wantProto)
+		if start != c.wantStart || end != c.wantEnd || proto != c.wantProto {
+			t.Fatalf("parsePortSpec(%q) = (%d, %d, %q), want (%d, %d, %q)", c.spec, start, end, proto, c.wantStart, c.wantEnd, c.wantProto)
 		}
 	}
 }
@@ -184,10 +188,63 @@ func TestParsePortSpecValid(t *testing.T) {
 func TestParsePortSpecInvalid(t *testing.T) {
 	for _, spec := range []string{
 		"", "8080", "8080/", "/tcp", "8080/sctp", "0/tcp", "65536/tcp", "-1/tcp", "abc/tcp", "8080/tcp/extra",
+		"8080/both",      // expandBothProto's job, never reaches parsePortSpec directly
+		"8010-8000/tcp",  // start > end
+		"abc-8010/tcp",   // non-numeric start
+		"8000-abc/tcp",   // non-numeric end
+		"0-100/tcp",      // start out of bounds
+		"8000-70000/tcp", // end out of bounds
+		"8000-/tcp",      // missing end
+		"-8010/tcp",      // missing start (parses as "" before the dash)
 	} {
-		if _, _, err := parsePortSpec(spec); err == nil {
+		if _, _, _, err := parsePortSpec(spec); err == nil {
 			t.Errorf("parsePortSpec(%q): expected an error, got nil", spec)
 		}
+	}
+}
+
+// TestPortRangeElement guards the one new function emitting literal nft
+// syntax — it must agree exactly with formatPortSpec's single-port-vs-
+// range distinction for the round-trip (allow → nft element → read back
+// via parseSetElements → compared against the persisted spec) to hold.
+func TestPortRangeElement(t *testing.T) {
+	if got, want := portRangeElement(8080, 8080), "{ 8080 }"; got != want {
+		t.Fatalf("portRangeElement(8080, 8080) = %q, want %q", got, want)
+	}
+	if got, want := portRangeElement(8000, 8010), "{ 8000-8010 }"; got != want {
+		t.Fatalf("portRangeElement(8000, 8010) = %q, want %q", got, want)
+	}
+}
+
+func TestFormatPortSpec(t *testing.T) {
+	if got, want := formatPortSpec(8080, 8080, "tcp"), "8080/tcp"; got != want {
+		t.Fatalf("formatPortSpec(8080, 8080, tcp) = %q, want %q", got, want)
+	}
+	if got, want := formatPortSpec(8000, 8010, "tcp"), "8000-8010/tcp"; got != want {
+		t.Fatalf("formatPortSpec(8000, 8010, tcp) = %q, want %q", got, want)
+	}
+}
+
+func TestExpandBothProtoPassesThroughPlainSpec(t *testing.T) {
+	got := expandBothProto("8080/tcp")
+	if len(got) != 1 || got[0] != "8080/tcp" {
+		t.Fatalf("got %v, want [8080/tcp]", got)
+	}
+}
+
+func TestExpandBothProtoExpandsSinglePort(t *testing.T) {
+	got := expandBothProto("8080/both")
+	want := []string{"8080/tcp", "8080/udp"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestExpandBothProtoExpandsRange(t *testing.T) {
+	got := expandBothProto("8000-8010/both")
+	want := []string{"8000-8010/tcp", "8000-8010/udp"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 
@@ -200,15 +257,89 @@ func TestParseSetElementsEmpty(t *testing.T) {
 }
 
 func TestParseSetElementsMultiple(t *testing.T) {
-	listing := "table ip wganchor {\n\tset wganchor0_tcp {\n\t\ttype inet_service\n\t\telements = { 22, 80, 443 }\n\t}\n}"
+	listing := "table ip wganchor {\n\tset wganchor0_tcp {\n\t\ttype inet_service\n\t\tflags interval\n\t\telements = { 22, 80, 443 }\n\t}\n}"
 	got := parseSetElements(listing)
-	want := []int{22, 80, 443}
+	want := []string{"22", "80", "443"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 	for i, v := range want {
 		if got[i] != v {
 			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// TestParseSetElementsRange guards reading a range element back — the
+// shape currentAllowedPorts needs to round-trip a persisted
+// "<start>-<end>/<proto>" entry without spuriously re-adding it on a
+// repeat bring-up.
+func TestParseSetElementsRange(t *testing.T) {
+	listing := "table ip wganchor {\n\tset wganchor0_tcp {\n\t\ttype inet_service\n\t\tflags interval\n\t\telements = { 22, 8000-8010 }\n\t}\n}"
+	got := parseSetElements(listing)
+	want := []string{"22", "8000-8010"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// TestParseSetElementsWrappedAcrossLines guards parseSetElements against
+// nft's real output shape for a set with enough elements: confirmed
+// empirically (nft v1.0.9) that `elements = { ... }` wraps across
+// multiple lines (roughly 5 elements per line) once a set holds enough
+// entries — likely for any real range allow-list. TrimSpace on each
+// comma-split token absorbs the embedded newline/indentation, but that's
+// load-bearing and was previously only exercised by single-line fixtures.
+func TestParseSetElementsWrappedAcrossLines(t *testing.T) {
+	listing := "table ip wganchor {\n\tset wganchor0_tcp {\n\t\ttype inet_service\n\t\tflags interval\n\t\telements = { 22, 80, 443, 8080,\n\t\t             8000-8010, 9000-9010 }\n\t}\n}"
+	got := parseSetElements(listing)
+	want := []string{"22", "80", "443", "8080", "8000-8010", "9000-9010"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestSetListingLacksIntervalFlag(t *testing.T) {
+	stale := "table ip wganchor {\n\tset wganchor0_tcp {\n\t\ttype inet_service\n\t}\n}"
+	if !setListingLacksIntervalFlag(stale) {
+		t.Fatal("expected a listing without \"flags interval\" to be reported as needing migration")
+	}
+	current := "table ip wganchor {\n\tset wganchor0_tcp {\n\t\ttype inet_service\n\t\tflags interval\n\t}\n}"
+	if setListingLacksIntervalFlag(current) {
+		t.Fatal("expected a listing with \"flags interval\" to be reported as not needing migration")
+	}
+}
+
+// TestRuleHandlesForInstanceForMigration is the migration's rule-deletion
+// exit criterion: given a synthetic pre-migration chain listing,
+// migrateStaleInstanceSets must find and delete *all four* of an
+// instance's base rules, not just the one(s) belonging to whichever
+// proto's set is stale — deleting only a middle rule and letting it be
+// re-added later would land it after the terminating drop rule and make
+// it permanently dead (see migrateStaleInstanceSets's own comment).
+// migrateStaleInstanceSets reuses ruleHandlesForInstance directly for
+// this, so this exercises the exact function it calls, against instance
+// 0's full 4-rule fixture in sampleChainListing (already used elsewhere
+// in this file for the non-migration full-teardown case).
+func TestRuleHandlesForInstanceForMigration(t *testing.T) {
+	got := ruleHandlesForInstance(sampleChainListing, 0)
+	want := []int{6, 7, 8, 9}
+	if len(got) != len(want) {
+		t.Fatalf("instance 0 handles = %v, want all 4 base rule handles %v", got, want)
+	}
+	for i, h := range want {
+		if got[i] != h {
+			t.Fatalf("instance 0 handles = %v, want %v", got, want)
 		}
 	}
 }
@@ -260,10 +391,22 @@ func TestIsNftAbsentOutput(t *testing.T) {
 		output string
 		want   bool
 	}{
-		{"missing element", "Error: Could not process rule: No such file or directory\ndelete element ip wganchor wganchor0_tcp { 9999 }", true},
+		// This exact wording is what nft reports for a missing element in
+		// a plain (non-interval) set — still current for a set that
+		// predates the flags-interval schema, or for a wholly-absent set.
+		{"missing element (non-interval set)", "Error: Could not process rule: No such file or directory\ndelete element ip wganchor wganchor0_tcp { 9999 }", true},
 		{"missing table", "Error: No such file or directory; did you mean table 'wganchor' in family ip?", true},
 		{"set still referenced", "Error: Could not process rule: Device or resource busy\ndelete set ip wganchor wganchor0_tcp", false},
 		{"empty", "", false},
+		// Confirmed empirically (nft v1.0.9): once a set carries flags
+		// interval (every set does now, per ensureInstanceSets), a
+		// missing element reports THIS wording instead — caught in
+		// implementation review as a regression: without matching it,
+		// denyPortRange against an already-absent port, or a range that
+		// doesn't exactly match an allowed one (both documented no-ops in
+		// docs/arch/firewall.md/README.md), would hard-error instead.
+		{"missing element (interval set)", "Error: element does not exist\ndelete element ip wganchor wganchor0_tcp { 9999 }", true},
+		{"non-matching sub-range delete (interval set)", "Error: element does not exist\ndelete element ip wganchor wganchor0_tcp { 8005 }", true},
 	}
 	for _, c := range cases {
 		if got := isNftAbsentOutput(c.output); got != c.want {

@@ -70,8 +70,8 @@ chain hooked once:
 
 ```
 table ip wganchor
-  set wganchor<N>_tcp { type inet_service }   # one pair of sets per instance
-  set wganchor<N>_udp { type inet_service }
+  set wganchor<N>_tcp { type inet_service; flags interval }   # one pair of sets per instance
+  set wganchor<N>_udp { type inet_service; flags interval }
   chain input { type filter hook input priority filter; policy accept;
     iifname "wganchor<N>" ct state established,related accept  comment "wganchor-instance-<N>"
     iifname "wganchor<N>" tcp dport @wganchor<N>_tcp accept    comment "wganchor-instance-<N>"
@@ -97,6 +97,24 @@ removing an allowed port is `nft add element` / `nft delete element`
 against the set, not a rule-handle hunt, and an already-present element
 is a no-op — idempotent by construction, no extra bookkeeping needed.
 
+Sets carry `flags interval` so an element can be a range (`{
+8000-8010 }`) as well as an ordinary single port (`{ 8080 }`) — confirmed
+empirically that an interval-flagged set accepts both shapes
+transparently, a single port reading back as a bare integer rather than a
+degenerate length-1 range, so a single-port entry's on-disk/live
+representation is unchanged from before ranges existed. A set created by
+a wganchor binary predating this change lacks the flag; the next
+`enable`/`allow`/bring-up against it detects the stale schema (`nft list
+set` output missing `flags interval`), deletes it and the instance's 4
+base rules together (never just the rule(s) for the migrating set(s) —
+`nft add rule` only ever appends at the chain tail, so deleting a single
+middle rule and letting it be re-added later would land it after the
+still-present terminating `drop` rule and leave it permanently dead), and
+lets the same idempotent scaffold/reconcile machinery that runs on every
+bring-up recreate everything, including re-populating the set(s) from
+`firewall_allowed_ports`. Self-healing, no operator action required, no
+config migration needed.
+
 ### Commands: imperative, not fought over by a timer
 
 Per the user's explicit direction, `allow`/`deny`/`enable`/`disable` are
@@ -112,10 +130,17 @@ reintroducing a fighting-the-operator reconcile loop:
   instance number (same config/default lookup `server`/`client` already
   use), and the mechanism is identical regardless of which role created
   the interface.
-- `wganchor firewall allow --instance N --port <port>/<tcp|udp>` — adds
-  that port to the instance's set (and its persisted record, below).
-- `wganchor firewall deny --instance N --port <port>/<tcp|udp>` (or a
-  clearer name — an implementation-time naming choice) — removes it.
+- `wganchor firewall allow --instance N --port <port|start-end>/<tcp|udp|both>` —
+  adds that port (or port range) to the instance's set(s) (and its
+  persisted record, below). `/both` is a CLI-layer convenience that
+  expands to the tcp and udp specs separately before either reaches
+  storage or `nft` — `firewall_allowed_ports` and the nft sets never
+  contain the literal word "both", only `tcp`/`udp` entries.
+- `wganchor firewall deny --instance N --port <port|start-end>/<tcp|udp|both>` —
+  removes it. Exact-spec match only: denying a sub-range of a
+  previously-allowed wider range, or a range that doesn't exactly match
+  what was allowed, is a no-op — the same pre-existing limitation a
+  single port already has with a duplicate/overlapping entry.
 - `wganchor firewall disable --instance N` — removes exactly this
   instance's rules and sets (by exact comment match, rules before sets —
   nft won't delete a set a rule still references), leaving the shared

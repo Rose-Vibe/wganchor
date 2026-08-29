@@ -25,6 +25,8 @@ func main() {
 		runWatchCmd(os.Args[2:])
 	case "firewall":
 		runFirewallCmd(os.Args[2:])
+	case "relay":
+		runRelayCmd(os.Args[2:])
 	case "pair":
 		runPairCmd(os.Args[2:])
 	case "install":
@@ -44,7 +46,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       wganchor watch <server|client> [--instance N] [--config PATH] [--interval DURATION]")
 	fmt.Fprintln(os.Stderr, "       wganchor install <server|client> [--instance N] [--no-watch]")
 	fmt.Fprintln(os.Stderr, "       wganchor uninstall <server|client> [--instance N] [--purge]")
-	fmt.Fprintln(os.Stderr, "       wganchor firewall enable|allow|deny|disable --instance N [--port <port>/<tcp|udp>]")
+	fmt.Fprintln(os.Stderr, "       wganchor firewall enable|allow|deny|disable --instance N [--port <port|start-end>/<tcp|udp|both>]")
+	fmt.Fprintln(os.Stderr, "       wganchor relay add|remove <server|client> --instance N --ip <ipv4>")
 	fmt.Fprintln(os.Stderr, "       wganchor pair pubkey --instance N")
 	fmt.Fprintln(os.Stderr, "       wganchor pair peer --instance N --public-key KEY [--endpoint HOST:PORT]")
 	fmt.Fprintln(os.Stderr, "       wganchor pair run --instance N --remote TARGET [--remote-instance M] [--remote-exec TEMPLATE] [--endpoint HOST:PORT]")
@@ -82,24 +85,27 @@ func runWatchCmd(args []string) {
 }
 
 // runFirewallCmd parses `wganchor firewall <enable|allow|deny|disable>
-// --instance N [--port <port>/<tcp|udp>]` and delegates to the
-// Firewall* functions (firewall.go). No --role flag — resolving the
-// interface only needs the instance number, and the firewall mechanism
-// doesn't care which role created the interface (docs/arch/firewall.md).
+// --instance N [--port <port|start-end>/<tcp|udp|both>]` and delegates
+// to the Firewall* functions (firewall.go). No --role flag — resolving
+// the interface only needs the instance number, and the firewall
+// mechanism doesn't care which role created the interface
+// (docs/arch/firewall.md). `/both` is expanded into its tcp+udp pair
+// here, at the CLI layer, before either ever reaches parsePortSpec or a
+// Firewall* call — see expandBothProto (firewall.go).
 func runFirewallCmd(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: wganchor firewall <enable|allow|deny|disable> --instance N [--port <port>/<tcp|udp>]")
+		fmt.Fprintln(os.Stderr, "usage: wganchor firewall <enable|allow|deny|disable> --instance N [--port <port|start-end>/<tcp|udp|both>]")
 		os.Exit(1)
 	}
 	sub := args[0]
 	if sub != "enable" && sub != "allow" && sub != "deny" && sub != "disable" {
-		fmt.Fprintln(os.Stderr, "usage: wganchor firewall <enable|allow|deny|disable> --instance N [--port <port>/<tcp|udp>]")
+		fmt.Fprintln(os.Stderr, "usage: wganchor firewall <enable|allow|deny|disable> --instance N [--port <port|start-end>/<tcp|udp|both>]")
 		os.Exit(1)
 	}
 
 	fs := flag.NewFlagSet("firewall "+sub, flag.ExitOnError)
 	instance := fs.Int("instance", 0, "instance number (default 0)")
-	port := fs.String("port", "", "port spec <port>/<tcp|udp>, e.g. 8080/tcp (required for allow/deny)")
+	port := fs.String("port", "", "port spec <port|start-end>/<tcp|udp|both>, e.g. 8080/tcp, 8000-8010/udp, 53/both (required for allow/deny)")
 	fs.Parse(args[1:])
 
 	if err := validateInstance(*instance); err != nil {
@@ -118,15 +124,30 @@ func runFirewallCmd(args []string) {
 			fmt.Fprintf(os.Stderr, "wganchor firewall %s: --port is required, e.g. --port 8080/tcp\n", sub)
 			os.Exit(1)
 		}
-		p, proto, perr := parsePortSpec(*port)
-		if perr != nil {
-			fmt.Fprintf(os.Stderr, "wganchor firewall %s: %v\n", sub, perr)
-			os.Exit(1)
-		}
-		if sub == "allow" {
-			cmdErr = FirewallAllow(*instance, p, proto)
-		} else {
-			cmdErr = FirewallDeny(*instance, p, proto)
+		specs := expandBothProto(*port)
+		for i, spec := range specs {
+			start, end, proto, perr := parsePortSpec(spec)
+			if perr != nil {
+				fmt.Fprintf(os.Stderr, "wganchor firewall %s: %v\n", sub, perr)
+				os.Exit(1)
+			}
+			if sub == "allow" {
+				cmdErr = FirewallAllow(*instance, start, end, proto)
+			} else {
+				cmdErr = FirewallDeny(*instance, start, end, proto)
+			}
+			if cmdErr != nil {
+				// A /both spec expands to two independent, individually
+				// idempotent calls (firewall.go's expandBothProto) — if
+				// the second one fails, the first already succeeded and
+				// persisted. Say so, so the operator doesn't assume
+				// *nothing* happened: a plain re-run of the same command
+				// converges correctly either way.
+				if i > 0 {
+					fmt.Fprintf(os.Stderr, "wganchor firewall %s: %s already applied; re-run to retry the rest\n", sub, specs[i-1])
+				}
+				break
+			}
 		}
 	}
 
@@ -135,6 +156,53 @@ func runFirewallCmd(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("wganchor firewall %s: instance %d done\n", sub, *instance)
+}
+
+// runRelayCmd parses `wganchor relay <add|remove> <server|client>
+// --instance N --ip <ipv4>` and delegates to RelayAdd/RelayRemove
+// (relay.go). Unlike firewall, role IS a required positional argument
+// here — the two roles' live-apply mechanisms genuinely differ (see
+// docs/sprints/relay-and-firewall-ops/plan-relay-management.md's Goal
+// section), the same reason install/uninstall/watch already take role
+// positionally.
+func runRelayCmd(args []string) {
+	const usageLine = "usage: wganchor relay <add|remove> <server|client> --instance N --ip <ipv4>"
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, usageLine)
+		os.Exit(1)
+	}
+	sub := args[0]
+	if sub != "add" && sub != "remove" {
+		fmt.Fprintln(os.Stderr, usageLine)
+		os.Exit(1)
+	}
+
+	role, rest := parseLifecycleArgs("relay "+sub, "--instance N --ip <ipv4>", args[1:])
+	fs := flag.NewFlagSet("relay "+sub, flag.ExitOnError)
+	instance := fs.Int("instance", 0, "instance number (default 0)")
+	ip := fs.String("ip", "", "relay IPv4 address (required)")
+	fs.Parse(rest)
+
+	if err := validateInstance(*instance); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor relay %s: %v\n", sub, err)
+		os.Exit(1)
+	}
+	if *ip == "" {
+		fmt.Fprintf(os.Stderr, "wganchor relay %s: --ip is required\n", sub)
+		os.Exit(1)
+	}
+
+	var cmdErr error
+	if sub == "add" {
+		cmdErr = RelayAdd(role, *instance, *ip)
+	} else {
+		cmdErr = RelayRemove(role, *instance, *ip)
+	}
+	if cmdErr != nil {
+		fmt.Fprintf(os.Stderr, "wganchor relay %s: %v\n", sub, cmdErr)
+		os.Exit(1)
+	}
+	fmt.Printf("wganchor relay %s: instance %d done (relay_ip=%s)\n", sub, *instance, *ip)
 }
 
 // runPairCmd dispatches `wganchor pair pubkey|peer|run`. See
@@ -401,18 +469,13 @@ func run(role string, args []string) {
 	}
 
 	// interface_name/listen_port default to the per-instance formula when
-	// absent from the config, matching wireguard.md's "defaults to
-	// wganchor<N> [...], overridable" wording — a config missing them
-	// would otherwise reach `ip link add ""` (an opaque ip(8) error) or
-	// `wg set ... listen-port 0` (silently binds a random port instead of
-	// the documented one), rather than failing the way the pre-flight
-	// validation below is meant to.
-	if cfg.InterfaceName == "" {
-		cfg.InterfaceName = ifaceDefault
-	}
-	if cfg.ListenPort == 0 {
-		cfg.ListenPort = portDefault
-	}
+	// absent from the config (resolveRuntimeDefaults), matching
+	// wireguard.md's "defaults to wganchor<N> [...], overridable" wording
+	// — a config missing them would otherwise reach `ip link add ""` (an
+	// opaque ip(8) error) or `wg set ... listen-port 0` (silently binds a
+	// random port instead of the documented one), rather than failing the
+	// way the pre-flight validation below is meant to.
+	cfg.InterfaceName, cfg.ListenPort = resolveRuntimeDefaults(cfg, *instance)
 
 	// Key self-provisioning happens unconditionally on load, before the
 	// peer_public_key check below: each side is expected to be able to

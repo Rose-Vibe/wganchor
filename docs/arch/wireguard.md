@@ -193,6 +193,17 @@ knowing before treating "change the config, then re-run" as equivalent
 to "replace who's authorized." Fixing `ConfigureInterface` to prune
 stale peers is future work, not part of this plan.
 
+**Related known gap (`relay add`/`remove`, `wganchor relay` sprint)**:
+`wganchor watch`'s periodic reconciliation backstop (`watch.go`) only
+ever calls the `Reconcile*` routing functions on its interval, never
+`ConfigureInterface` — so on the **server** role specifically, if
+something external ever reset the live peer's `AllowedIPs` between
+`relay add`/`remove` calls, `watch` would not repair that on its own
+(only a fresh `relay add`/`remove` or a full `server` bring-up
+re-applies it). No evidence this happens in practice, unlike the `ip
+rule`-flush behavior `docs/arch/resilience.md` addresses; noted here as a
+known gap, not fixed.
+
 ## PersistentKeepalive
 
 25 seconds — the standard default used by `wg-quick`/most WireGuard

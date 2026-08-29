@@ -50,6 +50,33 @@ func defaultListenPort(instance int) int {
 	return 60217 + instance
 }
 
+// resolveRuntimeDefaults returns cfg's interface name and listen port,
+// falling back to the per-instance defaults (defaultInterfaceName/
+// defaultListenPort) for whichever is left blank/zero in the config —
+// the same fallback run() applies before ever touching live state. A
+// config that omits either field means "use the default," not "the
+// field doesn't matter yet." Shared by run() and relay.go's
+// liveApplyRelay so a hand-edited config missing listen_port can't reach
+// ConfigureInterface with a zero port on the relay live-apply path —
+// that would silently rebind WireGuard to a random ephemeral port
+// (`wg set ... listen-port 0`) instead of the documented default, the
+// same hazard class the interface-name default already guards against.
+// liveApplyRelay never persists the resolved values back to cfg/disk;
+// run() does (it assigns them onto cfg, which a subsequent first-run
+// EnsureKeys then writes out) — that's pre-existing behavior from
+// before this extraction, unchanged here.
+func resolveRuntimeDefaults(cfg *Config, instance int) (name string, listenPort int) {
+	name = cfg.InterfaceName
+	if name == "" {
+		name = defaultInterfaceName(instance)
+	}
+	listenPort = cfg.ListenPort
+	if listenPort == 0 {
+		listenPort = defaultListenPort(instance)
+	}
+	return name, listenPort
+}
+
 // maxInstance keeps defaultListenPort within a valid port number.
 const maxInstance = 65535 - 60217
 
