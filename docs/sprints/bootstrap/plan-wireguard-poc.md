@@ -1,0 +1,91 @@
+# Plan: Manual WireGuard PoC + Go Skeleton
+
+Depends on `plan-research.md` (routing design) and `plan-environment.md`
+(packages installed, secondary IP assigned).
+
+## Manual proof-of-concept (no Go involved yet)
+
+The goal is to prove the packet path from `docs/arch/overview.md` actually
+works on the real VPS before writing any code that automates it.
+
+- [ ] Generate a WireGuard keypair on each machine by hand (`wg genkey`,
+      `wg pubkey`).
+- [ ] Hand-write `wg0.conf` on both sides — home side includes
+      `PersistentKeepalive` at the interval decided in the research doc,
+      since home is expected to sit behind NAT — and bring the tunnel up
+      with `wg-quick up`. Confirm `wg show` reports a handshake.
+- [ ] On the VPS, apply the routing design from the research doc: route
+      the secondary IP's /32 to `wg0`, forwarding enabled.
+- [ ] On the home machine, assign the secondary IP to `wg0` (or configure
+      the policy route that lets a process bind it).
+- [ ] **Inbound path:** run a trivial listener on the home machine bound
+      explicitly to the secondary IP (e.g. `python3 -m http.server --bind
+      <secondary-ip> 8080` or `nc -l`). From a third machine (not the VPS,
+      not the home machine — e.g. a phone on cellular, or any external
+      host) hit `http://<secondary-ip>:8080` and confirm the response
+      arrives.
+- [ ] **Outbound path:** from the home machine, originate a connection
+      bound to the secondary IP (e.g. `curl --interface <secondary-ip>
+      https://ifconfig.me`) and confirm the external service reports back
+      the secondary IP, not the VPS's primary IP or the home machine's
+      real WAN IP. This is the direction most likely to hit `rp_filter`
+      or policy-routing gaps — don't skip it.
+- [ ] **Idle/NAT keepalive check:** leave the tunnel idle for at least 5
+      minutes, then repeat the inbound test. Confirms `PersistentKeepalive`
+      is actually keeping the NAT mapping alive rather than the first test
+      passing only because the handshake was still fresh.
+- [ ] **MTU check:** transfer a payload larger than one MTU (e.g. a 1 MB
+      file) over the inbound path. WireGuard's ~80-byte overhead means a
+      small HTTP response can succeed while larger transfers fragment or
+      stall — this needs its own test, not an inference from the small
+      request above.
+- [ ] Kill the listener and confirm the secondary IP stops responding
+      (rules out "it was reachable some other way" false positives).
+- [ ] Tear down the manual config (`wg-quick down`, remove the routes) —
+      this PoC's artifacts don't need to persist, the config file the Go
+      implementation writes later will supersede it.
+
+If any step fails, stop and update `docs/arch/overview.md` with the actual
+behavior before continuing — don't paper over a wrong assumption by
+fiddling until it happens to work.
+
+## Go project skeleton
+
+Only start this once the manual PoC succeeds — no point building on an
+unvalidated design.
+
+- [ ] `go.mod` for the module, single `main.go`-plus-packages layout, no
+      external frameworks per CLAUDE.md conventions.
+- [ ] `server` and `client` subcommands (stdlib `flag`/`os.Args`
+      dispatch, not a CLI framework — this is a two-subcommand tool).
+- [ ] Config file loading: JSON, using the layered lookup order from
+      `docs/arch/config-and-lifecycle.md` (`--config` flag →
+      `os.UserConfigDir()` → `/etc/wganchor/config.json`; no implicit cwd
+      lookup — dev use passes `--config` explicitly). Refuses to load a
+      config file that isn't mode `0600`. Schema matches what
+      `docs/arch/wireguard.md` specifies for keys, peer endpoint, and the
+      secondary IP. Parsing only; no WireGuard calls yet, and no
+      `install`/`uninstall`/systemd work — that's later, this
+      step is just proving the lookup-and-parse path.
+- [ ] Both subcommands currently just print the parsed config and exit —
+      real interface/tunnel setup is sprint 2.
+- [ ] `gofmt` clean, `go build` and `go vet` pass.
+- [ ] Build with `CGO_ENABLED=0`, then confirm staticness with `file` and
+      `ldd` (`ldd` should report "not a dynamic executable") — matches the
+      CLAUDE.md "single static Linux binary" convention, and this is the
+      only place in the sprint that actually checks it.
+
+## Exit criteria
+
+- [ ] External host reached a process bound to the secondary IP on the
+      home machine, through a hand-configured WireGuard tunnel, on both
+      the inbound and outbound paths, and after an idle/NAT-keepalive
+      period — this is the sprint's key validation and gates sprint 2
+      being planned at all.
+- [ ] A payload larger than one MTU transferred successfully over the
+      tunnel.
+- [ ] Any deviation from the research doc's assumed routing design is
+      written back into `docs/arch/overview.md`.
+- [ ] `wganchor server` / `wganchor client` build as a single static
+      binary (verified via `ldd`/`file`, not assumed), parse a config
+      file, and run without error.
