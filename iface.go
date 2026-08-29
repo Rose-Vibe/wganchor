@@ -39,15 +39,21 @@ func isWireGuardInterface(name string) bool {
 // EnsureInterface creates the WireGuard interface if it doesn't already
 // exist. Idempotent: re-running against an already-correct interface is a
 // no-op. Fails if name already exists but isn't a WireGuard device.
-func EnsureInterface(name string) error {
+// created reports whether this call actually created the interface (vs.
+// finding it already present) — used by the firewall feature to gate its
+// one-time default-enable notice on genuine first-time creation,
+// including after a reboot recreates the interface from scratch.
+func EnsureInterface(name string) (created bool, err error) {
 	if interfaceExists(name) {
 		if !isWireGuardInterface(name) {
-			return fmt.Errorf("interface %s already exists and is not a WireGuard device", name)
+			return false, fmt.Errorf("interface %s already exists and is not a WireGuard device", name)
 		}
-		return nil
+		return false, nil
 	}
-	_, err := runCmd("ip", "link", "add", name, "type", "wireguard")
-	return err
+	if _, err := runCmd("ip", "link", "add", name, "type", "wireguard"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ConfigureInterface sets the private key (server also sets listen-port)

@@ -1,6 +1,6 @@
 # Firewall: default-deny on the client's public relay interface
 
-Status: design, to be implemented in the `resilience-and-firewall` sprint.
+Status: implemented (`firewall.go`), `resilience-and-firewall` sprint.
 Reverses `plan-tunnel-runtime.md`'s original "firewall explicitly out of
 scope" decision for the *inbound-on-the-relay-interface* case
 specifically — that decision was about not managing the VPS's own ufw
@@ -37,6 +37,15 @@ section) remains explicitly out of scope, unchanged from
 `ufw`/system firewall, already documented as the operator's
 responsibility, and printed as a reminder by `wganchor install server`.
 This feature doesn't touch that.
+
+Concretely, this means the bring-up wiring (`main.go`'s `run()`) only
+ever applies the firewall scaffold and allowed-port state on the
+`client` role's path — never `server`'s. The `firewall` *subcommands*
+(`enable`/`allow`/`deny`/`disable`) remain role-agnostic on purpose (no
+`--role` flag), since an operator could still choose to run them against
+a server-role instance; `uninstall --purge`'s teardown call is
+correspondingly unconditional on role too, so state from that edge case
+still gets cleaned up.
 
 ## Design
 
@@ -126,14 +135,26 @@ each restores its own ruleset from its own persisted state at its own
 startup; wganchor needs the same. Two fields on `Config`
 (`disable_firewall`, `firewall_allowed_ports`) record the operator's
 last-known intent; `allow`/`deny`/`enable`/`disable` update them
-alongside the live nftables state, and `server`/`client`'s bring-up
-applies them (idempotently, every run) the same way it already applies
+alongside the live nftables state, and the client's bring-up applies
+them (idempotently, every run) the same way it already applies
 `relay_ips`. This is a narrow, deliberate exception to "not reconciled
 on a timer" — nothing re-diffs this *between* bring-ups, but each
 bring-up converges live state to the last recorded intent, which is what
 makes `allow`ed ports and an explicit `disable` durable across a reboot
 without wganchor needing to be a continuously-running process to
 remember them.
+
+Known gap: `wganchor watch` (the reconciliation companion) restores
+`relay_ips`, addresses, routes, and rules on an externally-detected
+change, but never re-applies firewall state — that's outside its scope
+(it isn't a bring-up). If something external flushes the whole nftables
+ruleset (see the standing `project_routing_rule_flush_bug` concern about
+something on this host flushing `ip rule` — the same class of external
+interference could in principle flush nftables too), `watch` would
+faithfully restore a public relay IP with no filter on it and no
+re-check until the next real bring-up. Not addressed in this sprint;
+worth revisiting if `nft flush ruleset` ever turns out to be part of
+that same flushing behavior.
 
 ### Default-on for a newly-created interface, with a clear one-time notice
 
@@ -143,7 +164,7 @@ a brand-new interface and some already-running (or later-added)
 So: when `EnsureInterface` (`iface.go`) creates a `wganchor<N>` interface
 for the first time — this requires changing `EnsureInterface`'s signature
 to return `(created bool, err error)`, since it currently only returns
-`error` — `server`/`client` automatically applies the recorded firewall
+`error` — the client automatically applies the recorded firewall
 state for that instance (per "Surviving a reboot" above: fresh, this
 means fully locked down except established/related; after a reboot with
 prior `allow`ed ports, this means those ports specifically) and prints a
@@ -156,20 +177,36 @@ To turn this off for this instance:                wganchor firewall disable --i
 (Firewall state is re-applied on every bring-up, including after a reboot, so allowed ports persist.)
 ```
 
+The "no inbound ports" line is conditional on whether `FirewallAllowedPorts`
+is empty — after a reboot with a previously-`allow`ed port, the notice
+instead reads `Allowed inbound ports (restored from config): 8080/tcp`,
+so the reprinted notice never asserts something false about the instance
+it's describing.
+
 Note this is deliberately *not* worded as "removes the firewall
 entirely" — per "Surviving a reboot," `disable` persists as the
 recorded intent and is honored on every future bring-up, but it doesn't
 prevent a *future* `firewall enable`/`allow` from turning it back on.
 
-An explicit `--no-firewall` flag on `server`/`client` skips applying the
-default (or the persisted intent) for that one invocation, for an
-operator who wants the old, fully-open behavior right now without
-changing the durable, recorded choice (`firewall disable` is the durable
-opt-out). `nft` being unavailable, or the enable step otherwise failing,
-on a fresh `server`/`client` run is a hard, actionable failure — matching
-the project's existing precondition-checking posture (`precheckLifecycle`
-for `install`/`uninstall`) — not a silent partial success with the tunnel
-left open and unfirewalled.
+An explicit `--no-firewall` flag on the client skips *applying* the
+default (or the persisted intent) for that one invocation — it does not
+remove any firewall rules already in place from a prior run. So it's
+useful for an nft-less host (where applying would fail outright) or a
+one-off diagnostic run, but it is not equivalent to "the old, fully-open
+behavior right now" on a host that has ever had the firewall enabled:
+existing rules are keyed on `iifname` as a plain string and persist
+across `--no-firewall` runs, reboots, and interface recreation exactly
+like any other rule. `firewall disable` is the actual way to get back to
+fully open, since it tears down the live rules and durably records the
+opt-out. (`--no-firewall` is also accepted, harmlessly, on `server` —
+there's nothing for it to skip there.) `nft` being unavailable, or the
+scaffold step otherwise failing, on a fresh client run is a hard,
+actionable failure — matching the project's existing
+precondition-checking posture (`precheckLifecycle` for
+`install`/`uninstall`) — not a silent partial success with the tunnel
+left open and unfirewalled. It's also checked *before* the relay IP is
+ever bound to the interface (not after), so a failure here never leaves
+a real, live public IP unfiltered even briefly.
 
 ## Exit criteria (elaborated further in the sprint's plan)
 
@@ -178,14 +215,14 @@ left open and unfirewalled.
   `wganchor-instance-1` is a substring of `wganchor-instance-10`),
   verified not to affect another instance's rules, Docker's rules, or
   Tailscale's rules.
-- A brand-new interface gets a default-deny firewall automatically, with
-  the notice printed once per creation; `--no-firewall` suppresses it for
-  that invocation; re-running `server`/`client` against an already-
+- A brand-new client interface gets a default-deny firewall automatically,
+  with the notice printed once per creation; `--no-firewall` suppresses it
+  for that invocation; re-running `client` against an already-
   existing interface within the same boot does not re-trigger the notice.
 - Firewall state (allowed ports, or an explicit `disable`) survives an
   interface being torn down and recreated (a reboot, or `ip link delete`
   + re-run) — not just a same-boot idempotent re-run.
-- `nft` missing, or `enable` otherwise failing, on a fresh `server`/
+- `nft` missing, or the scaffold step otherwise failing, on a fresh
   `client` run fails hard and actionably rather than silently leaving the
   tunnel open and unfirewalled.
 - Live-validated on the home machine: a `0.0.0.0`-bound test service

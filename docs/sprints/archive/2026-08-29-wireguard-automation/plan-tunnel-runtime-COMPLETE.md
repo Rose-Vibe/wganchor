@@ -230,6 +230,12 @@ that the remaining entries are still correct.
       so this doesn't require mutating the real sysctl.
 - [x] No code path invokes `ufw`/`iptables`/`nft` — confirmed by grepping
       the implementation; firewall state is untouched by `wganchor`.
+      **Superseded**: the `resilience-and-firewall` sprint's
+      `plan-firewall.md` reverses this specific decision for the
+      client's own relay interface (not the VPS's `ufw`) — see
+      `docs/arch/firewall.md`'s "Scope" section. This criterion remains
+      true as a historical record of the state at the time it was
+      written, not as a description of the current codebase.
 - [x] Table ID / rule priority derivation is unit-tested
       (`TestTableAndPriorityForInstanceAreDistinctAndMatchPoC`) for
       instances 0 and 1. Recorded as a durable design decision in

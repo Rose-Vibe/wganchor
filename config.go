@@ -18,6 +18,15 @@ type Config struct {
 	InterfaceName       string   `json:"interface_name"`
 	RelayIPs            []string `json:"relay_ips"`
 	PersistentKeepalive int      `json:"persistent_keepalive,omitempty"`
+
+	// DisableFirewall and FirewallAllowedPorts record the operator's
+	// last `wganchor firewall` intent so it survives a reboot (the
+	// interface, and its just-created nftables scaffold, are destroyed
+	// and recreated every reboot) — see docs/arch/firewall.md. Bring-up
+	// re-applies this recorded state on every invocation, not just
+	// first creation; nothing else ever re-diffs it on a timer.
+	DisableFirewall      bool     `json:"disable_firewall,omitempty"`
+	FirewallAllowedPorts []string `json:"firewall_allowed_ports,omitempty"` // e.g. "8080/tcp"
 }
 
 // Redacted returns a copy of cfg with PrivateKey masked, safe to print.

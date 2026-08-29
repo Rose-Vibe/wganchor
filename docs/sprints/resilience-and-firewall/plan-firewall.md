@@ -8,7 +8,7 @@ is the real enforcement point on the home machine).
 **Boundary with `plan-reconciliation-watch.md`**: `wganchor watch` never
 touches firewall state — it only reconciles `ip rule`/`ip route`/`ip
 addr` via the existing `Reconcile*Routes` functions. Firewall state is
-applied solely at `server`/`client` bring-up (Step 3, below) and by the
+applied solely at the client's bring-up (Step 3, below) and by the
 `firewall` subcommands themselves; nothing re-diffs it on a timer the way
 the watcher does for routing. Worth stating explicitly since it's
 load-bearing for this plan's "nothing fights the operator between
@@ -131,8 +131,8 @@ worded.
 The live-only, imperative design (`docs/arch/firewall.md`) is right for
 *how* `allow`/`deny` take effect — no separate reconcile timer fights an
 operator's manual `nft` edits between runs. But taken completely
-literally it has a real gap: a reboot destroys the interface, and
-`server`/`client` re-creating it on restart would see `created == true`
+literally it has a real gap: a reboot destroys the interface, and the
+client re-creating it on restart would see `created == true`
 again and re-enable a *default-deny-with-empty-sets* firewall — silently
 discarding any ports the operator had `allow`ed, and silently undoing an
 explicit `firewall disable`. Docker and Tailscale don't have this
@@ -159,7 +159,7 @@ FirewallAllowedPorts []string `json:"firewall_allowed_ports,omitempty"` // e.g. 
   on disable would only destroy data: a `disable` → `enable` round trip
   would otherwise silently lose every port the operator had `allow`ed.
   `deny` remains the only way to actually remove a port.
-- `server`/`client`'s bring-up (`main.go`'s `run()`), **on every
+- the client's bring-up (`main.go`'s `run()`), **on every
   invocation, not just first-time creation**: if `!cfg.DisableFirewall`,
   ensure the base scaffold exists (`ensureFirewallTable`/
   `ensureInstanceSets`/`ensureInstanceBaseRules` — all idempotent no-ops
@@ -209,9 +209,9 @@ anything" goal, so persistence is the recommended path here.
   the same boot), the notice is not re-printed, but the config-driven
   scaffold/port-set convergence above still runs unconditionally (cheap,
   idempotent, and needed so a mid-session `firewall allow` — run while
-  `server`/`client` isn't actively re-invoked — doesn't get silently
+  the client isn't actively re-invoked — doesn't get silently
   reverted by some *other*, unrelated future re-run either).
-- `--no-firewall` on `server`/`client`: equivalent to `DisableFirewall =
+- `--no-firewall` on the client: equivalent to `DisableFirewall =
   true` for this invocation, without necessarily persisting it (an
   operator wanting a *durable* opt-out should use `firewall disable`,
   which does persist it, per above) — this flag is for "don't do this
@@ -219,17 +219,17 @@ anything" goal, so persistence is the recommended path here.
   clearly in `--help` that this is an explicit opt-out of a security
   default, not a neutral flag.
 
-### If `nft` is unavailable, or `enable` fails, during `server`/`client`'s first run
+### If `nft` is unavailable, or `enable` fails, during the client's first run
 
 Default-on wires a new hard dependency (`nft` on `PATH`, a working
-nftables) into the already-shipped `server`/`client` bring-up path.
+nftables) into the already-shipped client bring-up path.
 Decision: **fail hard with an actionable error**, the same posture
 `precheckLifecycle` already applies to `install`/`uninstall` needing
 `systemctl` — silently proceeding with the tunnel open and unfirewalled
 would defeat the entire point of this feature, and would be a much worse
 failure mode than refusing to start.
 
-`--no-firewall` handles this for a manually-run `server`/`client`
+`--no-firewall` handles this for a manually-run client
 invocation, but **not** for an installed instance: the systemd unit's
 `ExecStart` is baked from the template at install time with no way to
 carry a per-invocation flag, so an `nft`-less host running wganchor as a
@@ -262,7 +262,7 @@ read as contradicted without explanation.
 ## Step 4: `install`/`uninstall` integration
 
 `install` doesn't need to change — the default-on behavior lives in
-`server`/`client`'s own first-run path (Step 3), which `install`'s
+the client's own first-run path (Step 3), which `install`'s
 `systemctl start` already invokes. `uninstall --purge` should additionally
 call `disableInstanceFirewall` for that instance (mirrors the existing
 purge step's interface teardown — firewall state for a purged instance
@@ -271,72 +271,109 @@ shouldn't linger any more than its `ip rule`s do, which
 `disableInstanceFirewall`'s error-tolerance requirement from Step 1, this
 call must be a graceful no-op — not an error — for every case where this
 instance's firewall was never enabled to begin with: a VPS `server`
-instance (firewalling is a client-side default, per
-`docs/arch/firewall.md`'s scope), an instance installed with
+instance (bring-up never applies a firewall there, per
+`docs/arch/firewall.md`'s scope — but the `firewall` subcommands remain
+role-agnostic, so this call itself is **not** gated on role, only its
+bring-up counterpart is), an instance installed with
 `--no-firewall`/later `firewall disable`d, or a host where `nft` was
 never installed at all. `uninstall --purge` must succeed in all of these
 cases exactly as it does today.
 
 ## Exit criteria
 
-- [ ] `enable`/`allow`/`deny`/`disable` are each idempotent and scoped to
+- [x] `enable`/`allow`/`deny`/`disable` are each idempotent and scoped to
       exactly one instance — verified an operation on instance 1 never
       touches instance 0's rules, and never touches Docker's or
       Tailscale's tables (their rule/packet counters unaffected by a
       wganchor firewall operation).
-- [ ] The comment-match logic is exact, not substring — unit-tested with
+- [x] The comment-match logic is exact, not substring — unit-tested with
       an instance-1-vs-instance-10 fixture confirming instance 1's
-      enable/disable never matches instance 10's rules.
-- [ ] `disableInstanceFirewall` deletes rules before sets, and tolerates
+      enable/disable never matches instance 10's rules
+      (`TestExistingInstanceBaseRuleKindsExactMatchNotSubstring`,
+      `TestRuleHandlesForInstanceExactMatch`/`TestRuleHandlesForInstance10`).
+      Also unit-tested: presence-checking additionally requires the
+      correct `iifname`, not just the comment, so a changed
+      `interface_name` doesn't silently read stale rules as still
+      protecting the new interface (`TestExistingInstanceBaseRuleKindsIgnoresStaleIifname`,
+      `TestStaleRuleHandlesForInstance`) — found during implementation
+      review, not in the original draft.
+- [x] `disableInstanceFirewall` deletes rules before sets, and tolerates
       an already-partially-or-fully-absent table/chain/rules/sets as
       success, not an error.
-- [ ] A brand-new interface is locked down by default (established/
+- [x] A brand-new client interface is locked down by default (established/
       related only) with the notice printed once per interface creation
       (this legitimately includes once per reboot, since the interface
       is re-created each time — not "exactly once ever"); re-running
-      `server`/`client` against an existing interface within the same
+      `client` against an existing interface within the same
       boot does not re-print the notice, and does not reset previously-
-      `allow`ed ports.
-- [ ] `--no-firewall` suppresses the default-enable for that invocation.
-- [ ] Firewall state survives a reboot: an `allow`ed port is still open
+      `allow`ed ports. Live-verified end to end on disposable instance 95,
+      including that the notice's wording is conditional on whether ports
+      were restored (fixed during implementation review — the original
+      wording asserted "no inbound ports are open yet" even immediately
+      after a reboot had just restored one).
+- [x] `--no-firewall` suppresses the default-enable for that invocation.
+      (Scope corrected during implementation review: it does not remove
+      rules already live from a prior run — see `docs/arch/firewall.md`.)
+- [x] Firewall state survives a reboot: an `allow`ed port is still open
       after the interface and its firewall scaffold are torn down and
-      recreated (simulate via `ip link delete` + re-running `server`/
-      `client`, without needing an actual reboot); a `firewall disable`d
+      recreated (simulated via `ip link delete` + re-running `client`,
+      confirmed live on instance 95 — the notice reprinted and the port
+      came back with no manual re-`allow`); a `firewall disable`d
       instance stays open across the same simulated recreation.
-- [ ] A `disable` → `enable` round trip does not lose previously-`allow`ed
+- [x] A `disable` → `enable` round trip does not lose previously-`allow`ed
       ports: `FirewallAllowedPorts` is untouched by `disable`, and
-      `enable` re-applies exactly what was recorded.
-- [ ] `firewall disable` succeeds with `nft` completely absent from
+      `enable` re-applies exactly what was recorded. Verified live on
+      production instance 0 and pure-unit-tested via `addPortSpec`/
+      `removePortSpec` (added during implementation review — the
+      round trip was previously only live-validated).
+- [x] `firewall disable` succeeds with `nft` completely absent from
       `PATH`, setting `DisableFirewall = true` without erroring; a
-      subsequent `server`/`client` invocation (simulating the installed
+      subsequent `client` invocation (simulating the installed
       unit's automatic restart) then succeeds on the same `nft`-less host
-      because bring-up skips the firewall scaffold entirely.
-- [ ] All four `firewall` subcommands fail with an actionable error
+      because bring-up skips the firewall scaffold entirely. Live-verified
+      via `env PATH=/usr/bin:/bin`.
+- [x] All four `firewall` subcommands fail with an actionable error
       against an instance with no config file, rather than silently
       having nowhere to record intent.
-- [ ] `nft` missing from `PATH` (or `enable` otherwise failing) on
-      `server`/`client`'s first run is a hard, actionable failure, not a
+- [x] `nft` missing from `PATH` (or the scaffold step otherwise failing) on
+      `client`'s first run is a hard, actionable failure, not a
       silent partial success — verified no tunnel state is left half-
-      configured. `--no-firewall` avoids this failure for a one-off
-      manual invocation; `firewall disable` (which works without `nft`,
-      per Step 3) is the durable opt-out for an installed, `nft`-less
-      instance, verified to let the installed unit's automatic restarts
-      succeed with no `nft` on `PATH` at all.
-- [ ] `uninstall --purge` removes that instance's firewall state, and is
+      configured. Fixed during implementation review: the firewall
+      scaffold now applies *before* `ReconcileClientRouting` binds the
+      relay IP, not after, so a scaffold failure exits with no public IP
+      ever bound (previously the relay IP, policy route, and rule were
+      already live by the time a firewall failure was caught). The
+      bring-up path's `nft`-missing error now reuses the same actionable
+      wording (`errNftMissing`) as the `firewall` subcommands.
+      `--no-firewall` avoids this failure for a one-off manual invocation;
+      `firewall disable` (which works without `nft`, per Step 3) is the
+      durable opt-out for an installed, `nft`-less instance, verified to
+      let the installed unit's automatic restarts succeed with no `nft`
+      on `PATH` at all.
+- [x] `uninstall --purge` removes that instance's firewall state, and is
       a graceful no-op (not an error) for an instance whose firewall was
       never enabled (server role, `--no-firewall`, or `nft` absent).
-- [ ] Live-validated on the home machine, each reachability step
+      Widened during implementation review: the teardown call is no
+      longer gated on `role == "client"`, since the `firewall` subcommands
+      are role-agnostic by design and could have been run against a
+      server-role instance too.
+- [x] Live-validated on the home machine, each reachability step
       confirmed from the real external vantage point (the existing VPS)
       rather than a local curl (loopback delivery doesn't exercise
       `iifname` matching, as found while validating the hand-applied
       stopgap this sprint): a `0.0.0.0`-bound test service unreachable
       via the relay IP by default, reachable after `allow`, unreachable
-      again after `deny`, and fully open again after `disable`.
-- [ ] The hand-applied stopgap ruleset (table `ip wganchor` on the home
+      again after `deny`, and fully open again after `disable`. Run
+      against production instance 0 with the user's explicit go-ahead
+      ("nothing on this system relies on it yet"), then restored to its
+      exact pre-test baseline.
+- [x] The hand-applied stopgap ruleset (table `ip wganchor` on the home
       machine) is either reused as-is by `enable`'s idempotent checks or
-      cleanly superseded — no duplicate table/chain left behind.
-- [ ] The VPS's own firewall (`ufw`, opened listen port, forwarding
+      cleanly superseded — no duplicate table/chain left behind. Confirmed
+      throughout live testing: no duplicate tables/chains/rules appeared
+      at any point.
+- [x] The VPS's own firewall (`ufw`, opened listen port, forwarding
       rules) is untouched by this feature.
-- [ ] `plan-tunnel-runtime-COMPLETE.md`'s "no code path invokes ufw/
+- [x] `plan-tunnel-runtime-COMPLETE.md`'s "no code path invokes ufw/
       iptables/nft" exit criterion is annotated as superseded by this
       plan, with a pointer here, so the archive stays coherent.

@@ -405,6 +405,17 @@ func UninstallInstance(role string, instance int, purge bool) error {
 			return err
 		}
 	}
+	// Bring-up only ever applies a firewall on the client role
+	// (docs/arch/firewall.md's scope), but the `firewall` subcommands
+	// are deliberately role-agnostic — an operator can run `firewall
+	// enable --instance N` against a server-role instance too. So this
+	// teardown isn't gated on role: it's already tolerant of "never
+	// enabled" (no `firewall` subcommand ever run, `nft` never
+	// installed, or already `disable`d), making it a graceful no-op in
+	// every case where there was nothing to remove.
+	if err := disableInstanceFirewall(instance); err != nil {
+		return err
+	}
 	if err := deleteInterfaceIfExists(interfaceName); err != nil {
 		return err
 	}

@@ -159,6 +159,16 @@ func buildReconcileResult(addrAdd, addrRemove, routeAdd, routeRemove, ruleAdd, r
 	}
 }
 
+// isFibTableMissingOutput reports whether `ip route show table <N>`
+// output/error indicates the table has never had a route added to it —
+// confirmed empirically ("Error: ipv4: FIB table does not exist.",
+// exit 2) — rather than a real failure. Only ever true for a table
+// number that has genuinely never been used; runCmd's own error
+// formatting includes stderr, so err.Error() is enough to check.
+func isFibTableMissingOutput(output string) bool {
+	return strings.Contains(strings.ToLower(output), "fib table does not exist")
+}
+
 // hasDefaultRoute reports whether `ip route show table <N>` output
 // already contains a default route out dev name, so
 // ReconcileClientRouting can report a repair instead of silently
@@ -248,8 +258,15 @@ func ReconcileClientRouting(name string, relayIPs []string, instance int) (Recon
 		}
 	}
 
+	// A policy routing table with no route ever added to it yet doesn't
+	// exist as far as the kernel's FIB is concerned — confirmed
+	// empirically, `ip route show table <N>` exits 2 with "FIB table
+	// does not exist" for a genuinely brand-new instance's first-ever
+	// bring-up (table 60217 only "exists" once something has been added
+	// to it, which the `replace` below is about to do for the first
+	// time). That's "no default route present", not a real failure.
 	routeTableOut, err := runCmd("ip", "route", "show", "table", tableStr)
-	if err != nil {
+	if err != nil && !isFibTableMissingOutput(err.Error()) {
 		return ReconcileResult{}, err
 	}
 	var routeAdd []string

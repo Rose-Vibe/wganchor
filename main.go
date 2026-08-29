@@ -23,6 +23,8 @@ func main() {
 		run(role, os.Args[2:])
 	case "watch":
 		runWatchCmd(os.Args[2:])
+	case "firewall":
+		runFirewallCmd(os.Args[2:])
 	case "install":
 		runInstall(os.Args[2:])
 	case "uninstall":
@@ -36,10 +38,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: wganchor <server|client> [--instance N] [--config PATH]")
+	fmt.Fprintln(os.Stderr, "usage: wganchor <server|client> [--instance N] [--config PATH] [--no-firewall]")
 	fmt.Fprintln(os.Stderr, "       wganchor watch <server|client> [--instance N] [--config PATH] [--interval DURATION]")
 	fmt.Fprintln(os.Stderr, "       wganchor install <server|client> [--instance N] [--no-watch]")
 	fmt.Fprintln(os.Stderr, "       wganchor uninstall <server|client> [--instance N] [--purge]")
+	fmt.Fprintln(os.Stderr, "       wganchor firewall enable|allow|deny|disable --instance N [--port <port>/<tcp|udp>]")
 }
 
 // runWatchCmd parses `wganchor watch <server|client> [--instance N]
@@ -71,6 +74,62 @@ func runWatchCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "wganchor watch: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runFirewallCmd parses `wganchor firewall <enable|allow|deny|disable>
+// --instance N [--port <port>/<tcp|udp>]` and delegates to the
+// Firewall* functions (firewall.go). No --role flag — resolving the
+// interface only needs the instance number, and the firewall mechanism
+// doesn't care which role created the interface (docs/arch/firewall.md).
+func runFirewallCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: wganchor firewall <enable|allow|deny|disable> --instance N [--port <port>/<tcp|udp>]")
+		os.Exit(1)
+	}
+	sub := args[0]
+	if sub != "enable" && sub != "allow" && sub != "deny" && sub != "disable" {
+		fmt.Fprintln(os.Stderr, "usage: wganchor firewall <enable|allow|deny|disable> --instance N [--port <port>/<tcp|udp>]")
+		os.Exit(1)
+	}
+
+	fs := flag.NewFlagSet("firewall "+sub, flag.ExitOnError)
+	instance := fs.Int("instance", 0, "instance number (default 0)")
+	port := fs.String("port", "", "port spec <port>/<tcp|udp>, e.g. 8080/tcp (required for allow/deny)")
+	fs.Parse(args[1:])
+
+	if err := validateInstance(*instance); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor firewall %s: %v\n", sub, err)
+		os.Exit(1)
+	}
+
+	var cmdErr error
+	switch sub {
+	case "enable":
+		cmdErr = FirewallEnable(*instance)
+	case "disable":
+		cmdErr = FirewallDisable(*instance)
+	case "allow", "deny":
+		if *port == "" {
+			fmt.Fprintf(os.Stderr, "wganchor firewall %s: --port is required, e.g. --port 8080/tcp\n", sub)
+			os.Exit(1)
+		}
+		p, proto, perr := parsePortSpec(*port)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "wganchor firewall %s: %v\n", sub, perr)
+			os.Exit(1)
+		}
+		if sub == "allow" {
+			cmdErr = FirewallAllow(*instance, p, proto)
+		} else {
+			cmdErr = FirewallDeny(*instance, p, proto)
+		}
+	}
+
+	if cmdErr != nil {
+		fmt.Fprintf(os.Stderr, "wganchor firewall %s: %v\n", sub, cmdErr)
+		os.Exit(1)
+	}
+	fmt.Printf("wganchor firewall %s: instance %d done\n", sub, *instance)
 }
 
 // runInstall and runUninstall parse the shared `<role> [--instance N]`
@@ -128,6 +187,9 @@ func run(role string, args []string) {
 	fs := flag.NewFlagSet(role, flag.ExitOnError)
 	instance := fs.Int("instance", 0, "instance number, selects wganchor<N>/<N>.json (default 0)")
 	configPath := fs.String("config", "", "explicit path to config file, overrides the default lookup")
+	noFirewall := fs.Bool("no-firewall", false,
+		"skip enabling the default client-side firewall for this invocation only — an explicit opt-out "+
+			"of a security default; `wganchor firewall disable` is the durable opt-out that survives a reboot")
 	fs.Parse(args)
 
 	if err := validateInstance(*instance); err != nil {
@@ -188,7 +250,8 @@ func run(role string, args []string) {
 	}
 
 	name := cfg.InterfaceName
-	if err := EnsureInterface(name); err != nil {
+	created, err := EnsureInterface(name)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 		os.Exit(1)
 	}
@@ -206,9 +269,53 @@ func run(role string, args []string) {
 			fmt.Fprintln(os.Stderr, ipForwardWarning)
 		}
 	} else {
+		// Client-side only, per docs/arch/firewall.md's scope: the
+		// server's own VPS firewall (ufw, forwarding rules) is out of
+		// scope and untouched here; the server also doesn't locally bind
+		// relay IPs at all (it only routes them), so an input-hook
+		// scaffold on its wganchor<N> interface would have nothing
+		// meaningful to filter. --no-firewall is a one-off, this-
+		// invocation-only override; `firewall disable` (cfg.DisableFirewall)
+		// is the durable, persisted opt-out.
+		//
+		// Applied BEFORE ReconcileClientRouting binds the relay IP to
+		// name (ip addr replace, below): the scaffold only needs the
+		// interface's *name*, not its existence — iifname is a string
+		// match — so ensuring it first means a firewall failure (nft
+		// missing, a real nft error) exits before the public relay IP is
+		// ever live on the host, never after. Reversing this order would
+		// leave a real, if brief, unfiltered window on every bring-up,
+		// and on any firewall failure that window would never close.
+		firewallActive := !cfg.DisableFirewall && !*noFirewall
+		if firewallActive {
+			if !nftAvailable() {
+				fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, errNftMissing)
+				os.Exit(1)
+			}
+			if err := ensureFirewallScaffold(name, *instance); err != nil {
+				fmt.Fprintf(os.Stderr, "wganchor %s: firewall: %v\n", role, err)
+				os.Exit(1)
+			}
+			if err := applyFirewallAllowedPorts(*instance, cfg.FirewallAllowedPorts); err != nil {
+				fmt.Fprintf(os.Stderr, "wganchor %s: firewall: %v\n", role, err)
+				os.Exit(1)
+			}
+		}
+
 		if _, err := ReconcileClientRouting(name, cfg.RelayIPs, *instance); err != nil {
 			fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 			os.Exit(1)
+		}
+
+		if created && firewallActive {
+			fmt.Printf("wganchor: new interface %s — a default-deny firewall was enabled on it automatically.\n", name)
+			if len(cfg.FirewallAllowedPorts) == 0 {
+				fmt.Printf("No inbound ports are open yet. To expose a service: wganchor firewall allow --instance %d --port 8080/tcp\n", *instance)
+			} else {
+				fmt.Printf("Allowed inbound ports (restored from config): %s\n", strings.Join(cfg.FirewallAllowedPorts, ", "))
+			}
+			fmt.Printf("To turn this off for this instance:                wganchor firewall disable --instance %d\n", *instance)
+			fmt.Println("(Firewall state is re-applied on every bring-up, including after a reboot, so allowed ports persist.)")
 		}
 	}
 

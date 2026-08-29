@@ -111,6 +111,24 @@ func TestIPRuleSourceToken(t *testing.T) {
 	}
 }
 
+// TestIsFibTableMissingOutput guards a real bug found live: a policy
+// routing table that has never had a route added to it doesn't "exist"
+// as far as the kernel's FIB is concerned, so `ip route show table <N>`
+// exits non-zero with this exact message for a genuinely brand-new
+// instance's very first bring-up — that must be treated as "no default
+// route present yet", not propagated as a hard failure.
+func TestIsFibTableMissingOutput(t *testing.T) {
+	if !isFibTableMissingOutput("ip route show table 60312: exit status 2: Error: ipv4: FIB table does not exist.\nDump terminated") {
+		t.Fatal("expected the real captured FIB-table-missing error to match")
+	}
+	if isFibTableMissingOutput("Error: Network is unreachable") {
+		t.Fatal("must not match an unrelated error")
+	}
+	if isFibTableMissingOutput("") {
+		t.Fatal("empty output must not match")
+	}
+}
+
 func TestBuildReconcileResult(t *testing.T) {
 	r := buildReconcileResult(
 		[]string{"203.0.113.20"}, nil,
