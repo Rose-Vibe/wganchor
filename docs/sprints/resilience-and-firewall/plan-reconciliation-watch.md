@@ -136,14 +136,22 @@ WantedBy=multi-user.target
 
 `BindsTo` (not just `After`) so the watcher stops automatically when the
 bring-up unit stops — it has nothing to watch once the tunnel it's
-watching is down. `wganchor install <role> --instance N --with-watch`
-additionally writes/enables this unit (reusing `writeUnitIfChanged`,
-`otherEnabledInstanceUnits`, etc. from `lifecycle.go` — this is the same
-per-instance-symlink-and-shared-template pattern already implemented,
-just for a second unit family). Without `--with-watch`, behavior is
-identical to today — this is strictly additive. `uninstall` must also
-stop/disable/remove the watch unit for that instance if it was installed
-(mirroring the existing unit's handling exactly).
+watching is down.
+
+**On by default**, matching `docs/arch/resilience.md`: `wganchor install
+<role> --instance N` writes/enables both the bring-up unit and this watch
+unit (reusing `writeUnitIfChanged`, `otherEnabledInstanceUnits`, etc. from
+`lifecycle.go` — the same per-instance-symlink-and-shared-template
+pattern already implemented, just for a second unit family). A new
+`--no-watch` flag on `install` skips installing/enabling the watch unit
+for an operator who wants the old, watcher-less behavior on purpose.
+Since this only takes effect on `install`, an already-installed instance
+keeps its current behavior until it's reinstalled — this is not a
+behavior change injected into already-running instances. `uninstall`
+must always stop/disable/remove the watch unit for that instance if it
+was installed, regardless of whether `--no-watch` was passed at install
+time (mirroring the existing unit's handling exactly — uninstall doesn't
+need to know how it got there, just that it might be there).
 
 ## Exit criteria
 
@@ -160,10 +168,11 @@ stop/disable/remove the watch unit for that instance if it was installed
       without the watch process exiting.
 - [ ] Only actual repairs are logged; routine periodic checks that find
       nothing to fix are not.
-- [ ] `install --with-watch` / `uninstall` correctly manage the new
-      per-instance watch unit, without affecting the existing bring-up
-      unit's behavior; omitting `--with-watch` leaves behavior unchanged
-      from before this plan.
+- [ ] `install` / `uninstall` correctly manage the new per-instance watch
+      unit by default, without affecting the existing bring-up unit's
+      behavior; `--no-watch` at install time skips it, and an
+      already-installed instance's behavior is unaffected until it's
+      reinstalled.
 - [ ] Live-validated on the home machine specifically: deliberately
       delete production instance 0's `ip rule` by hand while `watch` is
       running and confirm it's repaired and logged, for both a fresh

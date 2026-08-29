@@ -54,11 +54,16 @@ wganchor watch <server|client> --instance N
 Run as its own systemd unit (`wganchor-watch-<role>@<N>.service`,
 `Type=simple`, `Restart=always`, `After=wganchor-<role>@<N>.service`,
 `BindsTo=wganchor-<role>@<N>.service` — the watcher only makes sense
-while the bring-up unit is active, and should stop when it stops). Not
-installed by default; `wganchor install` gains a `--with-watch` flag (or
-similar — exact naming is an implementation detail for the plan) that
-also installs and enables the companion unit, matching the "opt-in,
-not silently added scope" spirit of what shipped so far.
+while the bring-up unit is active, and should stop when it stops).
+**On by default**: `wganchor install` installs and enables the companion
+unit automatically, the same way Tailscale's own resilience (the thing
+that made this bug detectable in the first place) is on by default with
+no manual step — the whole point is for wganchor to be self-healing out
+of the box, not something an operator has to know to opt into. A
+`--no-watch` flag on `install` opts out for anyone who wants the old,
+watcher-less behavior on purpose (matches the same "safe/resilient by
+default, explicit escape hatch" posture `docs/arch/firewall.md`
+independently arrived at for the default-deny firewall).
 
 The watch process does two things in a loop, both triggering exactly the
 same reconciliation the daemon already performs on every normal run
@@ -143,8 +148,10 @@ Tailscale's own log made this bug diagnosable.
   break and when was it fixed" from `journalctl` alone; routine
   no-op checks are not logged.
 - The existing `server`/`client` subcommands and their systemd unit are
-  unchanged in behavior — `watch` is a strictly additive, opt-in
-  companion.
+  unchanged in behavior — `watch` is a separate, additive companion
+  process; `install` enables it by default (`--no-watch` opts out), so
+  existing behavior only changes for a fresh `install`, never for an
+  already-installed instance until it's reinstalled.
 - Live-validated on the home machine specifically (this is where the
   bug was found), by deliberately reproducing the missing-rule condition
   (`ip rule del ...` by hand) and confirming the watcher repairs it and

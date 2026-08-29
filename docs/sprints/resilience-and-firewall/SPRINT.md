@@ -22,10 +22,12 @@ Both architecture docs are written; this sprint implements them.
 
 ## Scope
 
-1. **Resilience** (`plan-reconciliation-watch.md`): a new, opt-in
-   `wganchor watch <role> --instance N` companion process — watches
-   `ip monitor rule` for the fast path, periodic reconciliation as a
-   backstop, logs only when it actually repairs something.
+1. **Resilience** (`plan-reconciliation-watch.md`): a new
+   `wganchor watch <role> --instance N` companion process, installed and
+   enabled by default (matching Tailscale's own out-of-the-box
+   resilience — `--no-watch` opts out) — watches `ip monitor rule` for
+   the fast path, periodic reconciliation as a backstop, logs only when
+   it actually repairs something.
 2. **Firewall** (`plan-firewall.md`): `wganchor firewall
    enable|allow|deny|disable`, imperative/not config-managed, own
    dedicated nftables table coexisting with Docker/Tailscale's own
