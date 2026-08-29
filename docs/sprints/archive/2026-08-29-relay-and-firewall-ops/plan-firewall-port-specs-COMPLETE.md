@@ -254,13 +254,23 @@ unchanged rather than spuriously re-adding it every bring-up).
       sets, nothing else — confirmed idempotent in both directions
       (`allow 53/tcp` then `allow 53/both` only adds udp; `deny 53/both`
       removes both cleanly with neither side erroring).
-- [ ] **Deferred, needs a real VPS and external vantage point**: a range
-      is live-verified end-to-end: `allow --port 8000-8010/tcp` makes
-      every port in that range (spot-checked, not exhaustively) reachable
-      via the relay IP from an external vantage point, and ports outside
-      the range remain blocked. Everything checkable from the host itself
-      (rule presence, set contents, idempotence) is live-verified; only
-      genuine off-machine traffic remains.
+- [x] A range is live-verified end-to-end against the real, production
+      VPS/client pair (instance 0): deployed the new binary, restarted
+      `wganchor-client@0` (confirmed the tunnel handshake survived),
+      allowed `18000-18010/tcp`, bound throwaway listeners on `18005`
+      (inside the range) and `18020` (outside it), then probed both from
+      the VPS itself as the external vantage point (`nc -vz`). `18005`
+      connected; `18020` timed out — a DROP-style timeout, not a REJECT,
+      confirming the default-deny chain's `counter drop` policy rather
+      than an explicit reject. Cleaned up afterward: range denied,
+      listeners killed, `firewall_allowed_ports` back to empty. This also
+      incidentally confirmed the tool's core motivation live on this
+      exact host — the client had never had its firewall enabled before
+      this test (the running service predated this sprint's binary and
+      had never been restarted since), and a `ss -tlnp` right before
+      enabling it showed a long list of unrelated `0.0.0.0`-bound
+      services (Docker, node, etc.) that would have been silently
+      internet-reachable via the relay IP the whole time.
 - [x] The nft-set migration is live-verified against a pre-existing,
       non-interval-flagged set (hand-crafted with `nft` directly): all 4
       base rules are removed before the stale set is deleted (no "Device
