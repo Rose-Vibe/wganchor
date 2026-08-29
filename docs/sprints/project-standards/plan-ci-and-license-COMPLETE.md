@@ -72,11 +72,17 @@ if/when the user wants it.
       confirmed the gofmt-check step actually fails on unformatted code
       by testing the exact snippet against a deliberately-unformatted
       scratch file.
-- [ ] A push to `main` (or a test PR) actually triggers and passes the
+- [x] A push to `main` (or a test PR) actually triggers and passes the
       workflow on GitHub — verified live, not just "the YAML looks
       right," since a typo'd trigger or step that silently never runs
-      would defeat the whole point. Pending: to be checked immediately
-      after this commit is pushed.
+      would defeat the whole point. First push (`9a48c8a`) triggered run
+      33271433173, which passed but printed two informational
+      annotations: a Node.js 20 deprecation notice on
+      `checkout@v4`/`setup-go@v5`, and a "restore cache failed" warning
+      from `setup-go`'s default caching finding no `go.sum` (this repo
+      has no dependencies). Fixed in `ce8f258` (bumped to
+      `checkout@v5`/`setup-go@v6`, set `cache: false`); the follow-up run
+      33271490788 passed with zero annotations.
 - [x] README mentions the license (a one-line "License" section, or a
       badge) — a repo with a `LICENSE` file but no mention of it in the
       README is an easy thing to miss when standardizing. Added as
