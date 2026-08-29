@@ -8,51 +8,68 @@ Depends on `plan-research.md` (routing design) and `plan-environment.md`
 The goal is to prove the packet path from `docs/arch/overview.md` actually
 works on the real VPS before writing any code that automates it.
 
-- [ ] Generate a WireGuard keypair on each machine by hand (`wg genkey`,
+- [x] Generate a WireGuard keypair on each machine by hand (`wg genkey`,
       `wg pubkey`).
-- [ ] Hand-write `wganchor0.conf` on both sides — interface name
+- [x] Hand-write `wganchor0.conf` on both sides — interface name
       `wganchor0` and `ListenPort 60217` on the VPS side, per
       `docs/arch/wireguard.md` (deliberately not `wg0`/`51820`, to avoid
       colliding with a typical unrelated WireGuard setup on either
       machine) — home side includes `PersistentKeepalive` at the interval
       decided in the research doc, since home is expected to sit behind
       NAT. Bring the tunnel up with `wg-quick up ./wganchor0.conf`.
-      Confirm `wg show wganchor0` reports a handshake.
-- [ ] On the VPS, apply the routing design from the research doc: route
-      the secondary IP's /32 to `wganchor0`, forwarding enabled.
-- [ ] On the home machine, assign the secondary IP to `wganchor0` (or
-      configure the policy route that lets a process bind it).
-- [ ] **Inbound path:** run a trivial listener on the home machine bound
+      Confirm `wg show wganchor0` reports a handshake. Confirmed.
+- [x] On the VPS, apply the routing design from the research doc: route
+      the secondary IP's /32 to `wganchor0`, forwarding enabled. Also
+      required VPS ufw rules not anticipated in the original design — see
+      `docs/arch/overview.md`.
+- [x] On the home machine, assign the secondary IP to `wganchor0` (or
+      configure the policy route that lets a process bind it). Required
+      `AllowedIPs = 0.0.0.0/0` + `Table = off` + a manual `ip rule`/custom
+      routing table (`60217`/`20217`) — see `docs/arch/overview.md` for the
+      full mechanism and why a narrow `AllowedIPs` isn't sufficient.
+- [x] **Inbound path:** run a trivial listener on the home machine bound
       explicitly to the secondary IP (e.g. `python3 -m http.server --bind
       <secondary-ip> 8080` or `nc -l`). From a third machine (not the VPS,
       not the home machine — e.g. a phone on cellular, or any external
       host) hit `http://<secondary-ip>:8080` and confirm the response
-      arrives.
-- [ ] **Outbound path:** from the home machine, originate a connection
+      arrives. Confirmed (external host: a briefly-borrowed VPS from an
+      unrelated project, per user's explicit one-time authorization).
+- [x] **Outbound path:** from the home machine, originate a connection
       bound to the secondary IP (e.g. `curl --interface <secondary-ip>
       https://ifconfig.me`) and confirm the external service reports back
       the secondary IP, not the VPS's primary IP or the home machine's
       real WAN IP. This is the direction most likely to hit `rp_filter`
-      or policy-routing gaps — don't skip it.
-- [ ] **Idle/NAT keepalive check:** leave the tunnel idle for at least 5
+      or policy-routing gaps — don't skip it. Confirmed — see
+      `docs/arch/overview.md` for the WireGuard cryptokey-routing fix that
+      was actually required (not a kernel-routing or `rp_filter` issue).
+- [x] **Idle/NAT keepalive check:** leave the tunnel idle for at least 5
       minutes, then repeat the inbound test. Confirms `PersistentKeepalive`
       is actually keeping the NAT mapping alive rather than the first test
-      passing only because the handshake was still fresh.
-- [ ] **MTU check:** transfer a payload larger than one MTU (e.g. a 1 MB
+      passing only because the handshake was still fresh. Confirmed —
+      handshake refreshed throughout the idle period, inbound test
+      unchanged afterward.
+- [x] **MTU check:** transfer a payload larger than one MTU (e.g. a 1 MB
       file) over the inbound path. WireGuard's ~80-byte overhead means a
       small HTTP response can succeed while larger transfers fragment or
       stall — this needs its own test, not an inference from the small
-      request above.
-- [ ] Kill the listener and confirm the secondary IP stops responding
+      request above. Confirmed — 1 MB file transferred with matching
+      SHA-256 on both ends.
+- [x] Kill the listener and confirm the secondary IP stops responding
       (rules out "it was reachable some other way" false positives).
-- [ ] Tear down the manual config (`wg-quick down ./wganchor0.conf`, remove
+      Confirmed — `curl` returned exit 7 / HTTP 000 after the listener was
+      killed.
+- [x] Tear down the manual config (`wg-quick down ./wganchor0.conf`, remove
       the routes) —
       this PoC's artifacts don't need to persist, the config file the Go
-      implementation writes later will supersede it.
+      implementation writes later will supersede it. Done on both
+      machines; ephemeral keys/configs deleted. VPS ufw rules and
+      `ip_forward` sysctl were kept (durable environment setup, not
+      PoC-only scaffolding).
 
-If any step fails, stop and update `docs/arch/overview.md` with the actual
-behavior before continuing — don't paper over a wrong assumption by
-fiddling until it happens to work.
+All steps passed; no plan/assumption revisions were needed beyond the
+routing/firewall mechanism details now recorded in `docs/arch/overview.md`
+(the original design's *shape* was correct, the exact `AllowedIPs`/`Table`/
+`ip rule` mechanics just weren't knowable without running it).
 
 ## Go project skeleton
 
