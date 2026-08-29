@@ -50,6 +50,62 @@ go build -o wganchor .
 Copy the resulting `wganchor` binary to both the VPS and the home machine
 (or build separately on each — it's a single static binary either way).
 
+## Command reference
+
+Every subcommand accepts `--instance N` (default `0`) to target a specific
+tunnel — see [Multiple tunnels](#multiple-tunnels---instance-n). Run any
+subcommand with `-h`/`--help` for the full flag list; `pair run --help` in
+particular documents several caveats not repeated here.
+
+**Bring-up** — usually run via systemd (see Lifecycle below), not by hand:
+- `wganchor server [--instance N] [--config PATH] [--no-firewall]` — bring
+  up the VPS side: interface, keys, peer, routes.
+- `wganchor client [--instance N] [--config PATH] [--no-firewall]` — bring
+  up the home-machine side: interface, keys, peer, routes, and (unless
+  disabled) the default-deny firewall.
+
+**Lifecycle:**
+- `wganchor install <server|client> [--instance N] [--no-watch]` — install
+  the binary to `/usr/local/bin`, write a config skeleton, enable the
+  systemd bring-up unit and (by default) the `watch` companion unit.
+- `wganchor uninstall <server|client> [--instance N] [--purge]` — stop and
+  disable the units; `--purge` also deletes the config, keys, and the
+  interface.
+
+**Firewall** (client-side default-deny — this is how you expose a service):
+- `wganchor firewall allow --instance N --port <port|start-end>/<tcp|udp|both>` —
+  open a port, a port range, or both protocols for a service you're
+  running, e.g. `wganchor firewall allow --instance 0 --port 8080/tcp`, or
+  `--port 8000-8010/tcp` for a range, or `--port 53/both` for both
+  protocols on one port.
+- `wganchor firewall deny --instance N --port <port|start-end>/<tcp|udp|both>` —
+  close it again (same spec shapes as `allow`).
+- `wganchor firewall enable --instance N` — idempotently (re-)ensure the
+  default-deny scaffold exists and the recorded allow-list is applied.
+- `wganchor firewall disable --instance N` — fully open, durably (persists
+  across reboots — this is the actual "turn it off" command, not
+  `--no-firewall`).
+
+**Relay IPs** — the secondary IP(s) being relayed:
+- `wganchor relay add <server|client> --instance N --ip <ipv4>` — add a
+  relay IP; live-applies immediately if the instance's interface is
+  already up, otherwise takes effect on the next bring-up.
+- `wganchor relay remove <server|client> --instance N --ip <ipv4>` —
+  remove one.
+
+**Pairing** (key exchange between the two sides):
+- `wganchor pair run --instance N --remote TARGET [flags]` — automated:
+  exchanges public keys with a remote host over SSH.
+- `wganchor pair pubkey --instance N` — print this instance's public key
+  (self-provisioning a keypair first if it doesn't have one).
+- `wganchor pair peer --instance N --public-key KEY [--endpoint HOST:PORT]` —
+  record the other side's public key (and endpoint, client only) by hand.
+
+**Self-healing:**
+- `wganchor watch <server|client> [--instance N] [--config PATH] [--interval DURATION]` —
+  the reconciliation loop; `install` already enables this by default as a
+  systemd companion unit, so running it standalone is rarely needed.
+
 ## Setup guide
 
 This walks through pairing one VPS with one home machine, instance `0` (the
