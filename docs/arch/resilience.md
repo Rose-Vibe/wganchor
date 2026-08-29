@@ -75,10 +75,13 @@ already-reviewed, idempotent functions:
    project's established pattern of shelling out to `ip`/`wg` rather
    than adding a netlink library dependency — see CLAUDE.md's "no
    external frameworks for simple tasks"), read its stdout line by
-   line. On a line indicating a rule deletion that could plausibly be
-   this instance's rule (matching this instance's table number or
+   line. On a line indicating a rule deletion that's this instance's
+   rule specifically (matching both this instance's table number *and*
    priority — see `tableForInstance`/`priorityForInstance` in
-   `routing.go`), trigger a reconcile immediately. If the `ip monitor`
+   `routing.go` — deliberately stricter than "either": this tool's own
+   rules always carry both together, and requiring both avoids a false
+   trigger on an unrelated rule sharing only one of the two numbers),
+   trigger a reconcile immediately. If the `ip monitor`
    subprocess exits (for any reason), restart it with a short backoff —
    the watcher must not silently stop watching just because its
    subprocess died once.

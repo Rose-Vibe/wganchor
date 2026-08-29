@@ -1,0 +1,14 @@
+[Unit]
+Description=wganchor server routing-reconciliation watch (instance %i)
+After=wganchor-server@%i.service
+BindsTo=wganchor-server@%i.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wganchor watch server --instance %i
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=wganchor-server@%i.service

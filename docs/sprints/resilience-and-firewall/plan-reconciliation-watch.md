@@ -92,24 +92,34 @@ New file, e.g. `watch.go`:
   deletions distinctly from a base `ip rule show` line — confirm the
   exact prefix empirically against the installed `iproute2` version
   before parsing; do not guess the format), call `onEvent()`.
-- If the subprocess exits for any reason (crashed, `ip` upgraded away
-  mid-run, transient error), restart it after a short backoff (e.g. 1s,
-  capped) rather than returning — the watcher must not silently stop
-  watching. Log a line when restarting (this is itself worth knowing
-  about, distinct from "found and fixed drift").
+- If the subprocess exits for any reason (crashed, transient error),
+  *or fails to even start* (`ip` missing/upgraded away — a start failure,
+  not a post-start exit, but the exact same "don't stop watching" case),
+  restart it after a short backoff (e.g. 1s, capped, e.g. 30s) rather
+  than returning — the watcher must not silently stop watching. The
+  backoff must only reset once a run has actually stayed up for a while
+  (not immediately after every successful start), or a subprocess that
+  starts fine but crash-loops instantly restarts every second forever
+  instead of backing off. Log a line when restarting (this is itself
+  worth knowing about, distinct from "found and fixed drift").
 - Filtering to *this instance's* rule specifically (rather than
   reconciling on every unrelated rule change anywhere on the system,
   which would be noisy and wasteful — e.g. Tailscale's own frequent rule
-  churn would otherwise trigger a wganchor reconcile every time) — match
-  the deleted rule's table or priority against
+  churn would otherwise trigger a wganchor reconcile every time) —
+  require the deleted rule's table *and* priority to both match
   `tableForInstance(instance)`/`priorityForInstance(instance)`
-  (`routing.go`) before calling `onEvent`. A parse failure on a line
-  (unexpected format) should be treated as "don't know, don't trigger" —
-  never as "trigger on everything," which would make instance filtering
-  pointless — but should also be logged, since it may mean the parser
-  needs updating for a newer `iproute2`.
+  (`routing.go`) before calling `onEvent` — stricter than "either", since
+  this tool's own rules always carry both together and requiring both
+  avoids a false trigger on an unrelated rule sharing only one of the two
+  numbers. A parse failure on a line (unexpected format) should be
+  treated as "don't know, don't trigger" — never as "trigger on
+  everything," which would make instance filtering pointless — but
+  should also be logged (distinctly from the common, silent "this
+  deletion just isn't ours" case), since it may mean the parser needs
+  updating for a newer `iproute2`.
 - This filter must be a pure, unit-testable function — e.g.
-  `shouldTrigger(line string, table, priority int) bool` — tested against
+  `shouldTrigger(line string, table, priority int) (trigger, parseFailed
+  bool)` — tested against
   *captured real* `ip monitor rule` output (confirm the exact format
   empirically first, per the note above, and keep a sample in the test
   file). This is the only way to actually verify this exit criterion's
@@ -144,11 +154,19 @@ New file, e.g. `watch.go`:
     current config fresh each time via the existing `loadConfig`
     (`config.go`) (so a config edit while the watcher is running takes
     effect, matching the "config is the source of truth, reconciled
-    against live state" posture already established), calls the
-    appropriate `Reconcile*Routes` function, and logs per Step 4. If the
-    config load fails (e.g. the file was deleted or is mid-write), log
-    the error and keep watching — do not exit the watch process over a
-    transient/one-off config read failure; the next trigger tries again.
+    against live state" posture already established), **runs the
+    existing `ValidateConfig(cfg, role)` (`validate.go`) before
+    reconciling — not just `loadConfig`**: `loadConfig` alone accepts a
+    semantically-empty config (e.g. `relay_ips` momentarily null/missing
+    mid-edit, or a fresh `install` skeleton), and without this check the
+    watcher itself would diff that against live state and delete every
+    currently-live address/rule for the instance — the exact class of
+    damage this self-healing daemon exists to prevent, not cause. Then
+    calls the appropriate `Reconcile*Routes` function, and logs per
+    Step 4. If the config load fails (e.g. the file was deleted or is
+    mid-write) *or fails validation*, log the error and keep watching —
+    do not exit the watch process over a transient/one-off config
+    problem; the next trigger tries again.
   - `watch` accepts the same `--config` flag `server`/`client` already
     do (`resolveConfigPath`, `main.go`), for the same reasons — parity
     with the commands it's reconciling for, not a new lookup mechanism.
@@ -265,7 +283,9 @@ there, just that it might be there).
       directly (pure functions, no `runCmd` involved); `shouldTrigger` is
       unit-tested against captured real `ip monitor rule` output,
       including a case confirming an unrelated table/priority does *not*
-      trigger.
+      trigger, and a case confirming its parse-failure signal fires (not
+      just silence) for a `Deleted` line matching this instance's
+      priority but with an unparsable/missing table field.
 - [ ] `wganchor watch` detects an externally-deleted `ip rule` for its
       own instance within a few seconds and repairs it, including the
       case where the table's default route was dropped along with the
@@ -281,12 +301,21 @@ there, just that it might be there).
       affects new inbound connections.)
 - [ ] A reconcile runs at watcher startup and after each `ip monitor
       rule` subprocess restart, not only on events/the periodic tick.
-- [ ] The `ip monitor rule` subprocess dying is detected and restarted
-      without the watch process exiting.
+- [ ] The `ip monitor rule` subprocess dying *or failing to even start*
+      (e.g. `ip` temporarily missing from `PATH`) is detected and
+      retried with a capped exponential backoff, without the watch
+      process exiting; the backoff only resets after a run has stayed up
+      for a while, so a subprocess that starts but crash-loops instantly
+      still backs off instead of retrying every second forever.
 - [ ] Only actual repairs are logged; routine periodic checks that find
       nothing to fix are not.
-- [ ] A config load failure mid-watch (e.g. file deleted) is logged and
-      does not stop the watch process; the next trigger retries.
+- [ ] A config that fails to load (e.g. file deleted) *or fails
+      `ValidateConfig`* (e.g. `relay_ips` empty/null mid-edit) is logged
+      and does not stop the watch process, and — critically — does not
+      reach a `Reconcile*Routes` call at all: verified that an instance
+      with a momentarily-invalid config keeps its live addresses/rules
+      untouched rather than having the watcher delete them as "no longer
+      desired."
 - [ ] `install` / `uninstall` correctly manage the new per-instance watch
       unit by default, without affecting the existing bring-up unit's
       behavior; `--no-watch` at install time skips it, and an

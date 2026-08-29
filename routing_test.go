@@ -111,6 +111,48 @@ func TestIPRuleSourceToken(t *testing.T) {
 	}
 }
 
+func TestBuildReconcileResult(t *testing.T) {
+	r := buildReconcileResult(
+		[]string{"203.0.113.20"}, nil,
+		nil, []string{"108.61.192.115"},
+		[]string{"203.0.113.20"}, nil,
+	)
+	if !r.Changed() {
+		t.Fatal("expected Changed() == true when any slice is non-empty")
+	}
+	if !reflect.DeepEqual(r.AddrsAdded, []string{"203.0.113.20"}) {
+		t.Fatalf("AddrsAdded = %v", r.AddrsAdded)
+	}
+	if !reflect.DeepEqual(r.RoutesRemoved, []string{"108.61.192.115"}) {
+		t.Fatalf("RoutesRemoved = %v", r.RoutesRemoved)
+	}
+	if !reflect.DeepEqual(r.RulesAdded, []string{"203.0.113.20"}) {
+		t.Fatalf("RulesAdded = %v", r.RulesAdded)
+	}
+
+	empty := buildReconcileResult(nil, nil, nil, nil, nil, nil)
+	if empty.Changed() {
+		t.Fatal("expected Changed() == false when every slice is empty")
+	}
+}
+
+func TestHasDefaultRoute(t *testing.T) {
+	present := "default dev wganchor0 scope link \n203.0.113.20 via 10.0.0.1 dev wganchor0 table 60217 \n"
+	if !hasDefaultRoute(present, "wganchor0") {
+		t.Fatal("expected default route on wganchor0 to be found")
+	}
+
+	wrongDev := "default dev wganchor1 scope link \n"
+	if hasDefaultRoute(wrongDev, "wganchor0") {
+		t.Fatal("must not match a default route on a different device")
+	}
+
+	missing := "203.0.113.20 via 10.0.0.1 dev wganchor0 table 60217 \n"
+	if hasDefaultRoute(missing, "wganchor0") {
+		t.Fatal("expected no default route to be found")
+	}
+}
+
 func TestIPForwardEnabled(t *testing.T) {
 	dir := t.TempDir()
 

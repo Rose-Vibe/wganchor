@@ -112,9 +112,22 @@ func writeUnitIfChanged(unitDir, role string) error {
 	return os.WriteFile(path, []byte(want), 0644)
 }
 
-// InstallInstance implements `wganchor install <role> --instance N`, per
-// plan-lifecycle.md.
-func InstallInstance(role string, instance int) error {
+// writeWatchUnitIfChanged is writeUnitIfChanged's counterpart for the
+// watch companion unit's shared template.
+func writeWatchUnitIfChanged(unitDir, role string) error {
+	path := filepath.Join(unitDir, unitFileName(watchRoleFor(role)))
+	want := watchUnitTemplateForRole(role)
+	if current, err := os.ReadFile(path); err == nil && string(current) == want {
+		return nil
+	}
+	return os.WriteFile(path, []byte(want), 0644)
+}
+
+// InstallInstance implements `wganchor install <role> --instance N
+// [--no-watch]`, per plan-lifecycle.md and plan-reconciliation-watch.md.
+// watch defaults to true (on-by-default, matching Tailscale's own
+// out-of-the-box resilience) — --no-watch passes false.
+func InstallInstance(role string, instance int, watch bool) error {
 	if err := precheckLifecycle(); err != nil {
 		return err
 	}
@@ -154,11 +167,34 @@ func InstallInstance(role string, instance int) error {
 	if err := writeUnitIfChanged(systemdUnitDir, role); err != nil {
 		return err
 	}
+	if watch {
+		if err := writeWatchUnitIfChanged(systemdUnitDir, role); err != nil {
+			return err
+		}
+	}
 	if _, err := runCmd("systemctl", "daemon-reload"); err != nil {
 		return err
 	}
 	unit := unitName(role, instance)
 	if _, err := runCmd("systemctl", "enable", unit); err != nil {
+		return err
+	}
+	watchUnit := unitName(watchRoleFor(role), instance)
+	if watch {
+		// Enabled before the bring-up unit's start below: the watch
+		// unit's [Install] WantedBy=<bring-up unit> means enabling it
+		// creates the symlink under the bring-up unit's own .wants/
+		// directory, so the bring-up unit's start (next) already pulls
+		// the watcher up too — no separate `systemctl start` of the
+		// watch unit needed.
+		if _, err := runCmd("systemctl", "enable", watchUnit); err != nil {
+			return err
+		}
+	} else if err := teardownWatchUnit(role, instance); err != nil {
+		// --no-watch on a reinstall of a previously-watcher-enabled
+		// instance: the flag describes desired state, so a still-enabled
+		// watch unit from an earlier install must be torn down here
+		// rather than silently left running.
 		return err
 	}
 	// enable and start are separate calls, not `enable --now`: a fresh
@@ -174,6 +210,9 @@ func InstallInstance(role string, instance int) error {
 	fmt.Printf("installed wganchor %s instance %d\n", role, instance)
 	fmt.Printf("public key: %s\n", pubKey)
 	fmt.Printf("config: %s\n", configPath)
+	if watch {
+		fmt.Printf("reconciliation watch enabled (%s) — pass --no-watch to opt out\n", watchUnit)
+	}
 	if startErr != nil {
 		fmt.Printf("note: %s did not start yet (%v) — fill in peer_public_key/", unit, startErr)
 		if role == "client" {
@@ -220,32 +259,40 @@ func isUnitNotInstalledOutput(output string) bool {
 	return strings.Contains(combined, "does not exist") || strings.Contains(combined, "no such file")
 }
 
-// multiUserWantsDir is where `systemctl enable` creates the enablement
-// symlink for a unit whose [Install] section says `WantedBy=multi-user.target`
-// — confirmed empirically to be the reliable source of truth for "which
-// instances are actually enabled". `systemctl list-unit-files` was tried
-// first and rejected: for a templated unit it only ever lists the shared
-// template itself (state `indirect`), never the per-instance instantiated
-// units, so it can't answer "is any other instance still enabled" at all.
-func multiUserWantsDir() string {
-	return filepath.Join(systemdUnitDir, "multi-user.target.wants")
-}
-
-// otherEnabledInstanceUnits globs wantsDir for enabled instances of role
-// other than excludeUnit — used to decide whether the shared template file
-// is still in use before removing it. wantsDir is a parameter (rather than
-// always multiUserWantsDir()) so this is testable against a fixture
-// directory.
-func otherEnabledInstanceUnits(wantsDir, role, excludeUnit string) ([]string, error) {
-	matches, err := filepath.Glob(filepath.Join(wantsDir, fmt.Sprintf("wganchor-%s@*.service", role)))
+// otherEnabledInstanceUnits globs every `*.wants/` directory under
+// systemdDir for enabled instances of role other than excludeUnit — used
+// to decide whether the shared template file is still in use before
+// removing it. The bring-up unit's own enablement symlinks live under
+// `multi-user.target.wants/` (confirmed empirically to be the reliable
+// source of truth for "which instances are actually enabled" —
+// `systemctl list-unit-files` was tried first and rejected: for a
+// templated unit it only ever lists the shared template itself, state
+// `indirect`, never the per-instance instantiated units). The watch
+// companion unit's [Install] section instead points `WantedBy=` at the
+// bring-up unit itself, so its enablement symlinks land under a
+// different, per-instance directory
+// (`wganchor-<role>@<N>.service.wants/`) — hence globbing every
+// `*.wants/` dir rather than a single hardcoded one, a backward-
+// compatible generalization since the bring-up unit's existing
+// `multi-user.target.wants/` location still matches the wider glob
+// unchanged. systemdDir is a parameter (rather than always
+// systemdUnitDir) so this stays testable against a fixture directory
+// tree.
+func otherEnabledInstanceUnits(systemdDir, role, excludeUnit string) ([]string, error) {
+	pattern := fmt.Sprintf("wganchor-%s@*.service", role)
+	matches, err := filepath.Glob(filepath.Join(systemdDir, "*.wants", pattern))
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]bool)
 	var others []string
 	for _, m := range matches {
-		if name := filepath.Base(m); name != excludeUnit {
-			others = append(others, name)
+		name := filepath.Base(m)
+		if name == excludeUnit || seen[name] {
+			continue
 		}
+		seen[name] = true
+		others = append(others, name)
 	}
 	sort.Strings(others)
 	return others, nil
@@ -256,7 +303,7 @@ func otherEnabledInstanceUnits(wantsDir, role, excludeUnit string) ([]string, er
 // uninstalling one instance must never break another running instance of
 // the same role.
 func removeTemplateIfUnused(role string, excludeUnit string) error {
-	others, err := otherEnabledInstanceUnits(multiUserWantsDir(), role, excludeUnit)
+	others, err := otherEnabledInstanceUnits(systemdUnitDir, role, excludeUnit)
 	if err != nil {
 		return err
 	}
@@ -269,6 +316,22 @@ func removeTemplateIfUnused(role string, excludeUnit string) error {
 	}
 	_, err = runCmd("systemctl", "daemon-reload")
 	return err
+}
+
+// teardownWatchUnit stops, disables, and removes the watch companion
+// unit for role/instance, and its shared template if no other instance
+// still uses it. Used both by uninstall (always, regardless of whether
+// --no-watch was passed at install time — uninstall doesn't need to know
+// how the watch unit got there, just that it might be there) and by
+// install --no-watch on a reinstall of a previously-watcher-enabled
+// instance (a flag describes desired state, so a still-enabled watch
+// unit from an earlier install must not be silently left running).
+func teardownWatchUnit(role string, instance int) error {
+	watchUnit := unitName(watchRoleFor(role), instance)
+	if err := disableUnit(watchUnit); err != nil {
+		return err
+	}
+	return removeTemplateIfUnused(watchRoleFor(role), watchUnit)
 }
 
 // deleteInterfaceIfExists tears down a WireGuard interface as part of
@@ -316,6 +379,9 @@ func UninstallInstance(role string, instance int, purge bool) error {
 		return err
 	}
 	if err := removeTemplateIfUnused(role, unit); err != nil {
+		return err
+	}
+	if err := teardownWatchUnit(role, instance); err != nil {
 		return err
 	}
 

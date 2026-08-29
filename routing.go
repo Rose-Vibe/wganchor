@@ -127,29 +127,81 @@ func parseIPRuleShowForTable(output string, table int) []string {
 	return ips
 }
 
+// ReconcileResult reports what a Reconcile* call actually changed, so a
+// caller (e.g. wganchor watch) can log only on real repairs instead of
+// every idempotent no-op run.
+type ReconcileResult struct {
+	AddrsAdded, AddrsRemoved   []string
+	RoutesAdded, RoutesRemoved []string
+	RulesAdded, RulesRemoved   []string
+}
+
+// Changed reports whether this result reflects any actual live-state
+// change.
+func (r ReconcileResult) Changed() bool {
+	return len(r.AddrsAdded) > 0 || len(r.AddrsRemoved) > 0 ||
+		len(r.RoutesAdded) > 0 || len(r.RoutesRemoved) > 0 ||
+		len(r.RulesAdded) > 0 || len(r.RulesRemoved) > 0
+}
+
+// buildReconcileResult assembles a ReconcileResult from the add/remove
+// sets already computed by diffRelayIPs (and, for the client's table
+// default route, hasDefaultRoute) — kept as a pure function, independent
+// of runCmd, so it's directly unit-testable.
+func buildReconcileResult(addrAdd, addrRemove, routeAdd, routeRemove, ruleAdd, ruleRemove []string) ReconcileResult {
+	return ReconcileResult{
+		AddrsAdded:    addrAdd,
+		AddrsRemoved:  addrRemove,
+		RoutesAdded:   routeAdd,
+		RoutesRemoved: routeRemove,
+		RulesAdded:    ruleAdd,
+		RulesRemoved:  ruleRemove,
+	}
+}
+
+// hasDefaultRoute reports whether `ip route show table <N>` output
+// already contains a default route out dev name, so
+// ReconcileClientRouting can report a repair instead of silently
+// absorbing it when the table's default route (not just the ip rule
+// pointing at it) was externally dropped.
+func hasDefaultRoute(output string, name string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "default" {
+			continue
+		}
+		for i, f := range fields {
+			if f == "dev" && i+1 < len(fields) && fields[i+1] == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ReconcileServerRoutes ensures exactly relayIPs have a /32 host route to
 // name, removing any stale route for a relay IP that's no longer
 // configured. Only ever touches routes scoped to dev name, never a
 // blind sweep of the routing table.
-func ReconcileServerRoutes(name string, relayIPs []string) error {
+func ReconcileServerRoutes(name string, relayIPs []string) (ReconcileResult, error) {
 	out, err := runCmd("ip", "route", "show", "dev", name)
 	if err != nil {
-		return err
+		return ReconcileResult{}, err
 	}
 	current := parseRouteShowHostRoutes(out)
-	_, toRemove := diffRelayIPs(relayIPs, current)
+	toAdd, toRemove := diffRelayIPs(relayIPs, current)
 
 	for _, ip := range toRemove {
 		if _, err := runCmd("ip", "route", "del", ip+"/32", "dev", name); err != nil {
-			return err
+			return ReconcileResult{}, err
 		}
 	}
 	for _, ip := range relayIPs {
 		if _, err := runCmd("ip", "route", "replace", ip+"/32", "dev", name); err != nil {
-			return err
+			return ReconcileResult{}, err
 		}
 	}
-	return nil
+	return buildReconcileResult(nil, nil, toAdd, toRemove, nil, nil), nil
 }
 
 // ReconcileClientRouting ensures each relay IP is locally bindable
@@ -157,47 +209,58 @@ func ReconcileServerRoutes(name string, relayIPs []string) error {
 // removing stale addresses/rules for any relay IP no longer configured.
 // Never adds a kernel default route for name — see plan-tunnel-runtime.md
 // on why a wide AllowedIPs must not become a default-route override.
-func ReconcileClientRouting(name string, relayIPs []string, instance int) error {
+func ReconcileClientRouting(name string, relayIPs []string, instance int) (ReconcileResult, error) {
 	table := tableForInstance(instance)
 	priority := priorityForInstance(instance)
 	tableStr := strconv.Itoa(table)
 
 	addrOut, err := runCmd("ip", "-4", "addr", "show", "dev", name)
 	if err != nil {
-		return err
+		return ReconcileResult{}, err
 	}
-	_, staleAddrs := diffRelayIPs(relayIPs, parseAddrShowHostIPs(addrOut))
-	for _, ip := range staleAddrs {
+	addrAdd, addrRemove := diffRelayIPs(relayIPs, parseAddrShowHostIPs(addrOut))
+	for _, ip := range addrRemove {
 		if _, err := runCmd("ip", "addr", "del", ip+"/32", "dev", name); err != nil {
-			return err
+			return ReconcileResult{}, err
 		}
 	}
 	for _, ip := range relayIPs {
 		if _, err := runCmd("ip", "addr", "replace", ip+"/32", "dev", name); err != nil {
-			return err
+			return ReconcileResult{}, err
 		}
 	}
 
 	ruleOut, err := runCmd("ip", "rule", "show")
 	if err != nil {
-		return err
+		return ReconcileResult{}, err
 	}
 	currentRuleIPs := parseIPRuleShowForTable(ruleOut, table)
-	toAdd, staleRules := diffRelayIPs(relayIPs, currentRuleIPs)
-	for _, ip := range staleRules {
+	ruleAdd, ruleRemove := diffRelayIPs(relayIPs, currentRuleIPs)
+	for _, ip := range ruleRemove {
 		if _, err := runCmd("ip", "rule", "del", "from", ip, "table", tableStr); err != nil {
-			return err
+			return ReconcileResult{}, err
 		}
 	}
-	for _, ip := range toAdd {
+	for _, ip := range ruleAdd {
 		if _, err := runCmd("ip", "rule", "add", "from", ip, "table", tableStr,
 			"priority", strconv.Itoa(priority)); err != nil {
-			return err
+			return ReconcileResult{}, err
 		}
 	}
 
-	_, err = runCmd("ip", "route", "replace", "default", "dev", name, "table", tableStr)
-	return err
+	routeTableOut, err := runCmd("ip", "route", "show", "table", tableStr)
+	if err != nil {
+		return ReconcileResult{}, err
+	}
+	var routeAdd []string
+	if !hasDefaultRoute(routeTableOut, name) {
+		routeAdd = []string{"default"}
+	}
+	if _, err := runCmd("ip", "route", "replace", "default", "dev", name, "table", tableStr); err != nil {
+		return ReconcileResult{}, err
+	}
+
+	return buildReconcileResult(addrAdd, addrRemove, routeAdd, nil, ruleAdd, ruleRemove), nil
 }
 
 const ipForwardPath = "/proc/sys/net/ipv4/ip_forward"
