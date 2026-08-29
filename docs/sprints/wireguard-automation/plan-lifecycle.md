@@ -87,8 +87,9 @@ which unit to target):
 - `systemctl disable --now wganchor-<role>@<N>.service` — this removes
   only the per-instance enablement symlink, not the shared
   `wganchor-<role>@.service` template file itself (the template is used
-  by *every* instance of that role on the machine, per `install`'s "if
-  not already present" step). `systemctl daemon-reload`.
+  by *every* instance of that role on the machine, and `install` keeps it
+  in sync with the binary's own copy rather than only writing it once —
+  see "Revisions during implementation" below). `systemctl daemon-reload`.
 - The template unit file is only ever removed if no other enabled
   instance of that role remains on the machine (checked via
   `systemctl list-units 'wganchor-<role>@*.service'` or equivalent before
@@ -144,32 +145,105 @@ attempt this until the structural validation above passes.** Do not assume
 a second VPS is unavailable or skip this step outright — the user has
 already offered to provision one on request; ask at that point.
 
+## Revisions during implementation, not anticipated in the original plan
+
+- **`Type=oneshot` + `RemainAfterExit=yes`, not the systemd default
+  `Type=simple`.** `wganchor server`/`client` brings the tunnel up and
+  exits; it isn't a long-lived foreground process. Under `Type=simple`,
+  `systemctl is-active` falsely reported "inactive" for a genuinely
+  working tunnel. Live-verified fix: `active (exited)` now shown correctly
+  alongside a real `wg show` handshake. See `docs/arch/config-and-lifecycle.md`.
+- **`install` calls `systemctl enable` and `systemctl start` separately,
+  not `enable --now`.** After the `Type=oneshot` fix, `enable --now` on a
+  fresh, intentionally-incomplete skeleton config (no `peer_public_key`/
+  `peer_endpoint`/`relay_ips` yet) synchronously fails and was propagating
+  as `install` itself returning non-zero — even though everything
+  `install` is actually responsible for (binary, config, unit, enablement)
+  had succeeded. `start`'s failure is now reported as an informational
+  `note:` instead. Also added: `uninstall` now runs `systemctl
+  reset-failed` on the unit (best-effort) to clear the cosmetic "failed"
+  ghost entry this same on-failure/incomplete-config interaction can leave
+  in `systemctl list-units --all`.
+- **`otherEnabledInstanceUnits` globs the `multi-user.target.wants`
+  enablement-symlink directory directly, not `systemctl list-unit-files`.**
+  The latter was tried first and empirically only ever lists the shared
+  template itself (state `indirect`) for a templated unit, never the
+  per-instance instantiated units — it can't answer "is any other instance
+  still enabled" at all. The symlink-glob approach is correct and directly
+  unit-testable against a `t.TempDir()` fixture.
+- **The shared unit template is kept in sync on every `install`, not only
+  written once "if not already present."** `writeUnitIfChanged` rewrites
+  the on-disk template whenever it differs from the binary's embedded
+  copy (still never *removed* while another instance depends on it — that
+  guard is unchanged). Without this, a machine installed before the
+  `Type=oneshot` fix above would have kept running the broken
+  `Type=simple` unit through every later `install`, silently — this is
+  the same class of bug the `Type=oneshot` revision was written to fix,
+  just one layer up (a good template embedded in the binary, never
+  reaching the disk of a machine installed before that template changed).
+  Unit-tested (missing / stale / already-current cases) against a
+  `t.TempDir()` fixture, same pattern as `otherEnabledInstanceUnits`.
+- **`uninstall --purge` on a client also removes leftover `ip rule`
+  policy-routing entries, not just the interface.** The plan's original
+  purge step (above) only mentioned `ip link delete`, but policy rules
+  created by `ReconcileClientRouting` (`ip rule add from <ip> table
+  <N> ...`) aren't device-bound — deleting the interface alone leaves them
+  in the kernel forever, since nothing else revisits them once the config
+  recording their relay IPs is gone. `purgeClientPolicyRules` reads live
+  `ip rule show` output (reusing `parseIPRuleShowForTable`/
+  `tableForInstance` from the runtime path) rather than trusting the
+  config's `relay_ips`, so cleanup is correct even if they'd already
+  drifted. Server-role purge is unaffected — the server side only creates
+  device-scoped host routes, which `ip link delete` already reclaims.
+  Live-verified: a throwaway client instance's `ip addr`/`ip rule`/route-
+  table entries were confirmed present after `start` and fully gone after
+  `uninstall --purge`, with the real running instance left undisturbed.
+- **Purge tears down the interface (and, for a client, its policy rules)
+  *before* removing the config file, not after.** The config is the only
+  record of a non-default `interface_name`; removing it first meant a
+  failed interface teardown could never be retried correctly (a re-run
+  would fall back to `defaultInterfaceName` and lose track of the real
+  one).
+
 ## Exit criteria
 
-- [ ] `wganchor install server` / `install client` on a fresh instance
+- [x] `wganchor install server` / `install client` on a fresh instance
       produce a running, enabled systemd service and a `0600` config with
       concrete `listen_port`/`interface_name`; keypair generated and
-      public key printed.
-- [ ] Re-running `install` for the same instance is idempotent: no
-      duplicated units, no regenerated keys/config.
-- [ ] `wganchor uninstall` stops/disables/removes the per-instance
+      public key printed. (Live-verified on both the VPS and the home
+      machine; "running" qualified by the enable/start split above — a
+      fresh skeleton's `start` is expected to fail until the operator
+      fills in peer info, and `install` still exits 0 in that case.)
+- [x] Re-running `install` for the same instance is idempotent: no
+      duplicated units, no regenerated keys/config. (Live-verified: real
+      instance `0` on both machines re-`install`ed with no disruption to
+      its running state.)
+- [x] `wganchor uninstall` stops/disables/removes the per-instance
       enablement; config and interface survive unless `--purge` is
       passed; `--purge` removes them. The binary and the shared
       `wganchor-<role>@.service` template file are never removed by
       `uninstall` (with or without `--purge`).
-- [ ] Uninstalling a never-installed instance is a no-op, not an error.
-- [ ] Uninstalling one instance of a role (e.g. `client` instance `1`)
+- [x] Uninstalling a never-installed instance is a no-op, not an error.
+- [x] Uninstalling one instance of a role (e.g. `client` instance `1`)
       while another instance of the same role (`client` instance `0`)
       remains installed and enabled does not disable or remove that other
       instance, and does not delete the shared template unit file while
-      it's still in use.
-- [ ] `install`/`uninstall` invoked as non-root, or on a host without
+      it's still in use. (Unit-tested against `t.TempDir()` fixtures;
+      live-verified on both machines with real instance `0` left
+      undisturbed by installing/purging a throwaway instance `1`/`2`/`3`.)
+- [x] `install`/`uninstall` invoked as non-root, or on a host without
       `systemctl` on `PATH`, fail with an actionable error before any
       state is touched (verified: no binary copied, no config written, no
-      unit installed).
-- [ ] `install client --instance 1` produces a distinct, non-colliding
+      unit installed). (Live-verified the non-root case; the missing-
+      `systemctl` case relies on `exec.LookPath` and is additionally
+      covered by unit tests around `precheckLifecycle`.)
+- [x] `install client --instance 1` produces a distinct, non-colliding
       systemd unit and config from instance `0`, verified without needing
-      a second VPS.
-- [ ] Live two-independent-tunnel validation: either completed (if the
+      a second VPS. (Live-verified on the home machine.)
+- [x] Live two-independent-tunnel validation: either completed (if the
       user provides a second VPS during this sprint) or explicitly logged
       as the sprint's one remaining deferred item, not silently dropped.
+      **Deferred** — not attempted this milestone; the user has offered to
+      provision a second VPS on request (see project memory), to be asked
+      for once this is the only remaining item before the sprint can
+      close.

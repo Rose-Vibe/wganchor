@@ -1,9 +1,11 @@
 # Config, Keys, and Lifecycle
 
-Status: design decisions, not yet implemented. This governs the "Config
-file loading" step of `docs/sprints/archive/2026-08-29-bootstrap/plan-wireguard-poc-COMPLETE.md`'s Go
-skeleton, and everything here is meant to be settled before that step
-starts, so the skeleton doesn't need reworking in sprint 2.
+Status: config loading, key handling, and lifecycle (install/uninstall,
+systemd) are all implemented — see `docs/sprints/wireguard-automation/`.
+The sections below were originally written as pre-implementation design
+decisions; where implementation diverged or added detail (systemd unit
+`Type`, the `enable`/`start` split, instance-enablement detection), that's
+now folded in rather than kept as a separate "what we found later" appendix.
 
 ## Goal
 
@@ -75,33 +77,80 @@ warning, not a silent log line easy to miss on a headless box.
 
 ## Lifecycle (systemd, install/uninstall)
 
-Design only, not yet implemented — decided here, ahead of the Go skeleton
-work, so the subcommand surface doesn't need reworking later.
+Implemented in `lifecycle.go`/`units.go` (`wireguard-automation` sprint,
+`plan-lifecycle.md`).
 
-- Ship a systemd *template* unit per role (`wganchor-server@.service`,
-  `wganchor-client@.service`), instantiated with the instance number
+- Ships a systemd *template* unit per role (`wganchor-server@.service`,
+  `wganchor-client@.service`, embedded in the binary via `//go:embed` from
+  `units/`), instantiated with the instance number
   (`wganchor-server@0.service` for the default/only instance today):
   `Restart=on-failure`, `WantedBy=multi-user.target`. Templated from the
   start, not a flat unit name for instance 0 — see
   `docs/arch/wireguard.md`'s multi-instance naming decision.
+  - **`Type=oneshot` + `RemainAfterExit=yes`, not the systemd default
+    `Type=simple`.** `wganchor server`/`client` brings the tunnel up and
+    exits — it is not a long-lived foreground process. Under
+    `Type=simple`, systemd expects `ExecStart` to keep running, so
+    `systemctl is-active` falsely reported "inactive" for a genuinely
+    working tunnel. `Type=oneshot`/`RemainAfterExit=yes` makes a completed
+    bring-up show correctly as `active (exited)`; live-verified against a
+    real WireGuard handshake.
+  - A unit that fails before ever completing bring-up (e.g. a fresh,
+    unconfigured skeleton) hits `Restart=on-failure` and — with systemd's
+    default `StartLimitBurst=5`/`StartLimitIntervalSec=10` — settles into
+    `ActiveState=failed` within about a second rather than looping
+    forever; this is systemd's own self-limiting behavior, not something
+    `wganchor` needs to implement. A manual `systemctl start` after that
+    window elapses (or `install` re-run later) tries again normally.
 - On startup, the daemon must idempotently reconcile interface/route state
   rather than assume a clean slate — a prior crash leaving `wganchor0`
   half-configured must not require manual cleanup before it can start
   again. Same idempotency rule CLAUDE.md already states for network
   manipulation generally, applied specifically to the restart/recovery
   case.
-- `wganchor install [server|client]`: copies itself to
+- `wganchor install <server|client> [--instance N]`: copies itself to
   `/usr/local/bin/wganchor` (conventional location for a non-distro-
   packaged binary — `/usr/bin` is reserved for package-manager-installed
-  files), writes the systemd unit instance and a default
-  `/etc/wganchor/0.json` skeleton if absent, `systemctl enable --now
-  wganchor-<role>@0.service`. The skeleton is written with concrete
-  values (port, interface name), not left to implicit in-code defaults —
-  see the `listen_port` note in `docs/arch/wireguard.md`.
-- `wganchor uninstall`: stops/disables the service, removes the unit;
-  removing `/etc/wganchor` (config + keys) requires an explicit `--purge`
-  flag, mirroring apt's remove-vs-purge split — never delete keys/config
-  as a side effect of an ordinary uninstall.
+  files) via atomic temp-file-plus-rename, writes the systemd unit
+  template if it's missing *or* differs from the binary's own embedded
+  copy (never removed while another instance depends on it — see
+  `uninstall` below — but always kept in sync with the running binary's
+  version on `install`, so a machine installed before some future unit
+  fix doesn't keep running the old template forever; this is exactly the
+  failure mode a stricter "only if absent" rule would have caused for the
+  `Type=oneshot` fix documented below) and a default
+  `/etc/wganchor/<N>.json` skeleton if absent (concrete `listen_port`/
+  `interface_name` filled in, `peer_public_key`/`peer_endpoint`/
+  `relay_ips` left blank for the operator), then `systemctl daemon-reload`
+  and `systemctl enable wganchor-<role>@<N>.service`.
+  - **`enable` and `start` are separate calls, not `enable --now`.** A
+    fresh skeleton config has no peer info yet, so the immediate start is
+    *expected* to fail on a brand-new instance. With `enable --now` that
+    failure propagated as `install` itself returning a non-zero exit —
+    even though everything `install` is actually responsible for (binary,
+    config, unit file, enablement) had succeeded. `install` now calls
+    `systemctl start` separately and reports a failure there as an
+    informational `note:` pointing at the config path, not a fatal error.
+- `wganchor uninstall <server|client> [--instance N] [--purge]`: stops/
+  disables the instance's unit (`systemctl disable --now`, tolerating "was
+  never installed" as a no-op) and clears any lingering `ActiveState=failed`
+  record for it (`systemctl reset-failed`, best-effort — cosmetic only,
+  since `Restart=on-failure` means an instance whose config was never
+  finished often ends up in `failed` state; harmless, but confusing in
+  `systemctl list-units --all` if left). The shared template unit file is
+  only removed once no *other* enabled instance of that role remains.
+  Removing `/etc/wganchor` (config + keys) and the interface requires an
+  explicit `--purge` flag, mirroring apt's remove-vs-purge split — never
+  delete keys/config as a side effect of an ordinary uninstall.
+  - **Detecting other enabled instances**: done by globbing
+    `/etc/systemd/system/multi-user.target.wants/wganchor-<role>@*.service`
+    for the actual enablement symlinks `systemctl enable` creates — *not*
+    by parsing `systemctl list-unit-files`, which was tried first and
+    empirically only ever lists the shared template itself (state
+    `indirect`), never the per-instance instantiated units, so it can't
+    answer "is any other instance still enabled" at all. The symlink-glob
+    approach is both correct and directly unit-testable against a
+    `t.TempDir()` fixture, with no `systemctl` needed in tests.
 - **Design constraint driving all of the above:** all state must be
   filesystem-resident at the standard locations (`/etc/wganchor/`, the
   systemd unit) rather than known only to the currently-running process.

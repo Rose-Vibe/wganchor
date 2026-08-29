@@ -20,6 +20,10 @@ func main() {
 	switch role {
 	case "server", "client":
 		run(role, os.Args[2:])
+	case "install":
+		runInstall(os.Args[2:])
+	case "uninstall":
+		runUninstall(os.Args[2:])
 	case "-h", "--help":
 		usage()
 	default:
@@ -30,6 +34,54 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: wganchor <server|client> [--instance N] [--config PATH]")
+	fmt.Fprintln(os.Stderr, "       wganchor install <server|client> [--instance N]")
+	fmt.Fprintln(os.Stderr, "       wganchor uninstall <server|client> [--instance N] [--purge]")
+}
+
+// runInstall and runUninstall parse the shared `<role> [--instance N]`
+// shape, then delegate to InstallInstance/UninstallInstance (lifecycle.go).
+func runInstall(args []string) {
+	role, rest := parseLifecycleArgs("install", args)
+	fs := flag.NewFlagSet("install", flag.ExitOnError)
+	instance := fs.Int("instance", 0, "instance number (default 0)")
+	fs.Parse(rest)
+
+	if err := validateInstance(*instance); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor install: %v\n", err)
+		os.Exit(1)
+	}
+	if err := InstallInstance(role, *instance); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor install: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runUninstall(args []string) {
+	role, rest := parseLifecycleArgs("uninstall", args)
+	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
+	instance := fs.Int("instance", 0, "instance number (default 0)")
+	purge := fs.Bool("purge", false, "also remove the config and interface for this instance")
+	fs.Parse(rest)
+
+	if err := validateInstance(*instance); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor uninstall: %v\n", err)
+		os.Exit(1)
+	}
+	if err := UninstallInstance(role, *instance, *purge); err != nil {
+		fmt.Fprintf(os.Stderr, "wganchor uninstall: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// parseLifecycleArgs extracts the required, positional <server|client>
+// role argument shared by install/uninstall, exiting with a usage error
+// if it's missing or invalid.
+func parseLifecycleArgs(cmd string, args []string) (role string, rest []string) {
+	if len(args) < 1 || (args[0] != "server" && args[0] != "client") {
+		fmt.Fprintf(os.Stderr, "usage: wganchor %s <server|client> [--instance N]\n", cmd)
+		os.Exit(1)
+	}
+	return args[0], args[1:]
 }
 
 func run(role string, args []string) {
