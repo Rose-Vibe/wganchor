@@ -1,4 +1,7 @@
-package main
+// Package lifecycle implements `wganchor install`/`uninstall`: writing
+// systemd units and config skeletons, and tearing them down again, per
+// docs/arch/config-and-lifecycle.md.
+package lifecycle
 
 import (
 	"bytes"
@@ -10,29 +13,27 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"wganchor/internal/config"
+	"wganchor/internal/firewall"
+	"wganchor/internal/routing"
+	"wganchor/internal/sysexec"
+	"wganchor/internal/wireguard"
 )
 
 const (
 	systemdUnitDir     = "/etc/systemd/system"
-	wganchorConfigDir  = "/etc/wganchor"
 	wganchorBinaryPath = "/usr/local/bin/wganchor"
 )
-
-// configPathForInstance is the system-daemon config location for
-// instance, per docs/arch/config-and-lifecycle.md.
-func configPathForInstance(instance int) string {
-	return filepath.Join(wganchorConfigDir, fmt.Sprintf("%d.json", instance))
-}
 
 // skeletonConfig builds the config `install` writes for a fresh instance:
 // concrete listen_port/interface_name filled in (never left implicit,
 // per docs/arch/wireguard.md), everything the operator must supply by
 // hand left blank.
-func skeletonConfig(instance int, privateKey string) *Config {
-	return &Config{
+func skeletonConfig(instance int, privateKey string) *config.Config {
+	return &config.Config{
 		PrivateKey:    privateKey,
-		ListenPort:    defaultListenPort(instance),
-		InterfaceName: defaultInterfaceName(instance),
+		ListenPort:    config.DefaultListenPort(instance),
+		InterfaceName: config.DefaultInterfaceName(instance),
 	}
 }
 
@@ -54,7 +55,7 @@ func precheckLifecycle() error {
 // so re-running install after a rebuild picks up the new binary, but a
 // no-op install doesn't needlessly touch /usr/local/bin. Written via a
 // temp-file-plus-rename in the destination directory, same reasoning as
-// persistConfig: never leave a partially-written binary in place.
+// config.Persist: never leave a partially-written binary in place.
 func copyBinaryIfChanged(destPath string) error {
 	selfPath, err := os.Executable()
 	if err != nil {
@@ -135,31 +136,30 @@ func InstallInstance(role string, instance int, watch bool) error {
 		return err
 	}
 
-	configPath := configPathForInstance(instance)
+	configPath := config.PathForInstance(instance)
 	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(wganchorConfigDir, 0o700); err != nil {
+		if err := os.MkdirAll(config.Dir, 0o700); err != nil {
 			return err
 		}
-		if err := persistConfig(skeletonConfig(instance, ""), configPath); err != nil {
+		if err := config.Persist(skeletonConfig(instance, ""), configPath); err != nil {
 			return err
 		}
 	} else if err != nil {
 		return err
 	}
 
-	cfg, err := loadConfig(configPath)
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
 	// EnsureKeys, not a second generate/persist/derive sequence: it's the
 	// same security-sensitive key-provisioning path the daemon itself uses
-	// on first run (main.go), so there is exactly one place that can get
-	// this wrong. Also covers a config that exists but has an empty
-	// private_key (e.g. an install interrupted right after the skeleton
-	// was written) — a second implementation here previously reached
-	// PublicKeyFromPrivate("") in that case, which fails against `wg
-	// pubkey` after the binary had already been copied.
-	pubKey, _, err := EnsureKeys(cfg, configPath)
+	// on first run (cmd/wganchor). Also covers a config that exists but has
+	// an empty private_key (e.g. an install interrupted right after the
+	// skeleton was written) — a second implementation here previously
+	// reached PublicKeyFromPrivate("") in that case, which fails against
+	// `wg pubkey` after the binary had already been copied.
+	pubKey, _, err := wireguard.EnsureKeys(cfg, configPath)
 	if err != nil {
 		return err
 	}
@@ -172,11 +172,11 @@ func InstallInstance(role string, instance int, watch bool) error {
 			return err
 		}
 	}
-	if _, err := runCmd("systemctl", "daemon-reload"); err != nil {
+	if _, err := sysexec.RunCmd("systemctl", "daemon-reload"); err != nil {
 		return err
 	}
 	unit := unitName(role, instance)
-	if _, err := runCmd("systemctl", "enable", unit); err != nil {
+	if _, err := sysexec.RunCmd("systemctl", "enable", unit); err != nil {
 		return err
 	}
 	watchUnit := unitName(watchRoleFor(role), instance)
@@ -187,7 +187,7 @@ func InstallInstance(role string, instance int, watch bool) error {
 		// directory, so the bring-up unit's start (next) already pulls
 		// the watcher up too — no separate `systemctl start` of the
 		// watch unit needed.
-		if _, err := runCmd("systemctl", "enable", watchUnit); err != nil {
+		if _, err := sysexec.RunCmd("systemctl", "enable", watchUnit); err != nil {
 			return err
 		}
 	} else if err := teardownWatchUnit(role, instance); err != nil {
@@ -205,7 +205,7 @@ func InstallInstance(role string, instance int, watch bool) error {
 	// actually responsible for (binary, config, unit, enablement) still
 	// succeeded. The operator finishes the config, then starts the
 	// service themselves (or reruns `install`, which is idempotent).
-	_, startErr := runCmd("systemctl", "start", unit)
+	_, startErr := sysexec.RunCmd("systemctl", "start", unit)
 
 	fmt.Printf("installed wganchor %s instance %d\n", role, instance)
 	fmt.Printf("public key: %s\n", pubKey)
@@ -314,7 +314,7 @@ func removeTemplateIfUnused(role string, excludeUnit string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	_, err = runCmd("systemctl", "daemon-reload")
+	_, err = sysexec.RunCmd("systemctl", "daemon-reload")
 	return err
 }
 
@@ -337,10 +337,10 @@ func teardownWatchUnit(role string, instance int) error {
 // deleteInterfaceIfExists tears down a WireGuard interface as part of
 // --purge, tolerating "already gone" as success.
 func deleteInterfaceIfExists(name string) error {
-	if !interfaceExists(name) {
+	if !wireguard.InterfaceExists(name) {
 		return nil
 	}
-	_, err := runCmd("ip", "link", "delete", name)
+	_, err := sysexec.RunCmd("ip", "link", "delete", name)
 	return err
 }
 
@@ -350,17 +350,17 @@ func deleteInterfaceIfExists(name string) error {
 // interface — deleting the interface leaves them in the kernel forever,
 // since nothing else ever revisits them once the config that recorded
 // their relay IPs is gone. Read from live kernel state via the same
-// parseIPRuleShowForTable ReconcileClientRouting uses, rather than the
-// config's relay_ips, so purge still cleans up correctly even if relay_ips
-// had already drifted from what's actually in the kernel.
+// routing.ParseIPRuleShowForTable ReconcileClientRouting uses, rather
+// than the config's relay_ips, so purge still cleans up correctly even if
+// relay_ips had already drifted from what's actually in the kernel.
 func purgeClientPolicyRules(instance int) error {
-	table := tableForInstance(instance)
-	out, err := runCmd("ip", "rule", "show")
+	table := routing.TableForInstance(instance)
+	out, err := sysexec.RunCmd("ip", "rule", "show")
 	if err != nil {
 		return err
 	}
-	for _, ip := range parseIPRuleShowForTable(out, table) {
-		if _, err := runCmd("ip", "rule", "del", "from", ip, "table", strconv.Itoa(table)); err != nil {
+	for _, ip := range routing.ParseIPRuleShowForTable(out, table) {
+		if _, err := sysexec.RunCmd("ip", "rule", "del", "from", ip, "table", strconv.Itoa(table)); err != nil {
 			return err
 		}
 	}
@@ -389,9 +389,9 @@ func UninstallInstance(role string, instance int, purge bool) error {
 		return nil
 	}
 
-	configPath := configPathForInstance(instance)
-	interfaceName := defaultInterfaceName(instance)
-	if cfg, err := loadConfig(configPath); err == nil && cfg.InterfaceName != "" {
+	configPath := config.PathForInstance(instance)
+	interfaceName := config.DefaultInterfaceName(instance)
+	if cfg, err := config.Load(configPath); err == nil && cfg.InterfaceName != "" {
 		interfaceName = cfg.InterfaceName
 	}
 
@@ -399,7 +399,7 @@ func UninstallInstance(role string, instance int, purge bool) error {
 	// before the config is removed: the config is the only record of a
 	// non-default interface_name, so if teardown fails partway through, a
 	// retry must still be able to find the right interface rather than
-	// falling back to defaultInterfaceName and losing track of it.
+	// falling back to config.DefaultInterfaceName and losing track of it.
 	if role == "client" {
 		if err := purgeClientPolicyRules(instance); err != nil {
 			return err
@@ -413,7 +413,7 @@ func UninstallInstance(role string, instance int, purge bool) error {
 	// enabled" (no `firewall` subcommand ever run, `nft` never
 	// installed, or already `disable`d), making it a graceful no-op in
 	// every case where there was nothing to remove.
-	if err := disableInstanceFirewall(instance); err != nil {
+	if err := firewall.DisableInstance(instance); err != nil {
 		return err
 	}
 	if err := deleteInterfaceIfExists(interfaceName); err != nil {
@@ -423,8 +423,8 @@ func UninstallInstance(role string, instance int, purge bool) error {
 	if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if entries, err := os.ReadDir(wganchorConfigDir); err == nil && len(entries) == 0 {
-		_ = os.Remove(wganchorConfigDir) // best-effort: leaving an empty dir behind isn't worth failing the uninstall over
+	if entries, err := os.ReadDir(config.Dir); err == nil && len(entries) == 0 {
+		_ = os.Remove(config.Dir) // best-effort: leaving an empty dir behind isn't worth failing the uninstall over
 	}
 	return nil
 }

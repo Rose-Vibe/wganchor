@@ -1,14 +1,16 @@
-package main
+package pair
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"wganchor/internal/config"
+	"wganchor/internal/wireguard"
 )
 
 // writeFakeRemoteScript writes a POSIX shell script standing in for a real
-// remote wganchor over SSH, for exercising PairRun's orchestration logic
+// remote wganchor over SSH, for exercising Run's orchestration logic
 // (step ordering, validation-before-write, idempotence) without a real
 // remote or network. It's invoked exactly the way runRemote invokes any
 // --remote-exec target: `<script> <target> wganchor pair pubkey|peer ...`.
@@ -79,12 +81,13 @@ func readLinesIfExists(t *testing.T, path string) []string {
 	return strings.Split(trimmed, "\n")
 }
 
-// requireWG skips the calling test if `wg` isn't available — PairRun's
+// requireWG skips the calling test if `wg` isn't available — Run's
 // local-side steps always self-provision/derive a real keypair via
-// EnsureKeys, unlike the pure --remote-exec/--endpoint validation tests.
+// wireguard.EnsureKeys, unlike the pure --remote-exec/--endpoint
+// validation tests.
 func requireWG(t *testing.T) {
 	t.Helper()
-	if _, _, err := GenerateKeypair(); err != nil {
+	if _, _, err := wireguard.GenerateKeypair(); err != nil {
 		t.Skipf("wg not available: %v", err)
 	}
 }
@@ -93,8 +96,8 @@ func newLocalConfigFile(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
-	cfg := &Config{RelayIPs: []string{"203.0.113.1"}}
-	if err := persistConfig(cfg, path); err != nil {
+	cfg := &config.Config{RelayIPs: []string{"203.0.113.1"}}
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -102,7 +105,7 @@ func newLocalConfigFile(t *testing.T) string {
 
 // TestPairRunEndToEndHappyPath is the orchestration-level counterpart to
 // pair_test.go's unit tests: it exercises actual step ordering and argv
-// construction through PairRun itself, rather than through its live-VPS
+// construction through Run itself, rather than through its live-VPS
 // validation alone (see docs/sprints/pairing/plan-pairing.md's exit
 // criteria 4, 6, and 7, none of which strictly need a real remote).
 func TestPairRunEndToEndHappyPath(t *testing.T) {
@@ -112,7 +115,7 @@ func TestPairRunEndToEndHappyPath(t *testing.T) {
 
 	localPath := newLocalConfigFile(t)
 
-	err := PairRun(PairRunOptions{
+	err := Run(RunOptions{
 		Instance:       0,
 		RemoteInstance: 5,
 		Remote:         "faketarget",
@@ -123,19 +126,19 @@ func TestPairRunEndToEndHappyPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	localCfg, err := loadConfig(localPath)
+	localCfg, err := config.Load(localPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if localCfg.PeerPublicKey != samplePubKeyB {
 		t.Fatalf("local PeerPublicKey = %q, want %q", localCfg.PeerPublicKey, samplePubKeyB)
 	}
-	wantEndpoint := "faketarget:60222" // defaultListenPort(5) == 60217+5
+	wantEndpoint := "faketarget:60222" // config.DefaultListenPort(5) == 60217+5
 	if localCfg.PeerEndpoint != wantEndpoint {
 		t.Fatalf("local PeerEndpoint = %q, want %q", localCfg.PeerEndpoint, wantEndpoint)
 	}
 
-	localPub, err := PublicKeyFromPrivate(localCfg.PrivateKey)
+	localPub, err := wireguard.PublicKeyFromPrivate(localCfg.PrivateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,17 +177,17 @@ func TestPairRunSelfPairGuardFiresBeforePush(t *testing.T) {
 	scriptPath, _, peerLogPath := writeFakeRemoteScript(t)
 
 	localPath := newLocalConfigFile(t)
-	localCfg, err := loadConfig(localPath)
+	localCfg, err := config.Load(localPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	localPub, _, err := EnsureKeys(localCfg, localPath)
+	localPub, _, err := wireguard.EnsureKeys(localCfg, localPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PAIR_TEST_REMOTE_PUBKEY", localPub)
 
-	err = PairRun(PairRunOptions{
+	err = Run(RunOptions{
 		Instance:       0,
 		RemoteInstance: 3,
 		Remote:         "faketarget",
@@ -213,7 +216,7 @@ func TestPairRunInvalidEndpointNeverTouchesRemote(t *testing.T) {
 
 	localPath := newLocalConfigFile(t)
 
-	err := PairRun(PairRunOptions{
+	err := Run(RunOptions{
 		Instance:       0,
 		RemoteInstance: 5,
 		Remote:         "faketarget",
@@ -227,7 +230,7 @@ func TestPairRunInvalidEndpointNeverTouchesRemote(t *testing.T) {
 	if lines := readLinesIfExists(t, peerLogPath); len(lines) != 0 {
 		t.Fatalf("expected the remote never to be written to when --endpoint is invalid (B2), but peer log = %v", lines)
 	}
-	localCfg, err := loadConfig(localPath)
+	localCfg, err := config.Load(localPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +246,7 @@ func TestPairRunInvalidEndpointNeverTouchesRemote(t *testing.T) {
 func TestPairRunInvalidRemoteExecTemplateNeverTouchesLocalConfig(t *testing.T) {
 	localPath := newLocalConfigFile(t)
 
-	err := PairRun(PairRunOptions{
+	err := Run(RunOptions{
 		Instance:       0,
 		RemoteInstance: 0,
 		Remote:         "faketarget",
@@ -253,7 +256,7 @@ func TestPairRunInvalidRemoteExecTemplateNeverTouchesLocalConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a --remote-exec template missing {}")
 	}
-	localCfg, err := loadConfig(localPath)
+	localCfg, err := config.Load(localPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +269,7 @@ func TestPairRunInvalidRemoteExecTemplateNeverTouchesLocalConfig(t *testing.T) {
 // plan's exit criterion that a failed remote step leaves the local config
 // completely untouched. The local keypair is pre-provisioned so step 1 is
 // a pure read, isolating the assertion to what the failed remote step
-// itself changes (see PairRun's doc comment on the one benign,
+// itself changes (see Run's doc comment on the one benign,
 // documented exception: step 2 self-provisioning a *remote* keypair,
 // which this fixture doesn't model since it isn't a real wganchor).
 func TestPairRunFailedRemotePubkeyLeavesLocalConfigUntouched(t *testing.T) {
@@ -275,11 +278,11 @@ func TestPairRunFailedRemotePubkeyLeavesLocalConfigUntouched(t *testing.T) {
 	t.Setenv("PAIR_TEST_FAIL_PUBKEY", "1")
 
 	localPath := newLocalConfigFile(t)
-	localCfg, err := loadConfig(localPath)
+	localCfg, err := config.Load(localPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := EnsureKeys(localCfg, localPath); err != nil {
+	if _, _, err := wireguard.EnsureKeys(localCfg, localPath); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(localPath)
@@ -287,7 +290,7 @@ func TestPairRunFailedRemotePubkeyLeavesLocalConfigUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = PairRun(PairRunOptions{
+	err = Run(RunOptions{
 		Instance:       0,
 		RemoteInstance: 5,
 		Remote:         "faketarget",
@@ -316,9 +319,9 @@ func TestPairRunFailedRemotePubkeyLeavesLocalConfigUntouched(t *testing.T) {
 // "re-running pair run a second time is a no-op" exit criterion: the
 // fixture's fake remote isn't itself idempotence-aware (it logs every
 // invocation unconditionally), so only the local config file's
-// idempotence — governed by PairPeer's own no-op-write logic — is
+// idempotence — governed by Peer's own no-op-write logic — is
 // asserted here; the remote half is covered by pair_test.go's
-// TestPairPeerIdempotentNoWriteWhenUnchanged, since the same PairPeer
+// TestPairPeerIdempotentNoWriteWhenUnchanged, since the same Peer
 // code runs on a real remote wganchor.
 func TestPairRunSecondRunIsNoOpLocally(t *testing.T) {
 	requireWG(t)
@@ -326,14 +329,14 @@ func TestPairRunSecondRunIsNoOpLocally(t *testing.T) {
 	t.Setenv("PAIR_TEST_REMOTE_PUBKEY", samplePubKeyB)
 
 	localPath := newLocalConfigFile(t)
-	opts := PairRunOptions{
+	opts := RunOptions{
 		Instance:       0,
 		RemoteInstance: 5,
 		Remote:         "faketarget",
 		RemoteExec:     scriptPath + " {}",
 		ConfigPath:     localPath,
 	}
-	if err := PairRun(opts); err != nil {
+	if err := Run(opts); err != nil {
 		t.Fatalf("first run: unexpected error: %v", err)
 	}
 	before, err := os.Stat(localPath)
@@ -341,7 +344,7 @@ func TestPairRunSecondRunIsNoOpLocally(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := PairRun(opts); err != nil {
+	if err := Run(opts); err != nil {
 		t.Fatalf("second run: unexpected error: %v", err)
 	}
 	after, err := os.Stat(localPath)

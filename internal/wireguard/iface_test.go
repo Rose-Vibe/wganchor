@@ -1,12 +1,13 @@
-package main
+package wireguard
 
 import (
 	"reflect"
 	"testing"
+	"wganchor/internal/config"
 )
 
 func TestAllowedIPsForRoleClientIsWideOpen(t *testing.T) {
-	cfg := &Config{RelayIPs: []string{"203.0.113.20"}}
+	cfg := &config.Config{RelayIPs: []string{"203.0.113.20"}}
 	got := AllowedIPsForRole(cfg, "client")
 	want := []string{"0.0.0.0/0"}
 	if !reflect.DeepEqual(got, want) {
@@ -15,7 +16,7 @@ func TestAllowedIPsForRoleClientIsWideOpen(t *testing.T) {
 }
 
 func TestAllowedIPsForRoleServerMatchesRelayIPs(t *testing.T) {
-	cfg := &Config{RelayIPs: []string{"203.0.113.20", "108.61.192.115"}}
+	cfg := &config.Config{RelayIPs: []string{"203.0.113.20", "108.61.192.115"}}
 	got := AllowedIPsForRole(cfg, "server")
 	want := []string{"203.0.113.20/32", "108.61.192.115/32"}
 	if !reflect.DeepEqual(got, want) {
@@ -24,7 +25,7 @@ func TestAllowedIPsForRoleServerMatchesRelayIPs(t *testing.T) {
 }
 
 func TestAllowedIPsForRoleServerSingleRelayIP(t *testing.T) {
-	cfg := &Config{RelayIPs: []string{"203.0.113.20"}}
+	cfg := &config.Config{RelayIPs: []string{"203.0.113.20"}}
 	got := AllowedIPsForRole(cfg, "server")
 	want := []string{"203.0.113.20/32"}
 	if !reflect.DeepEqual(got, want) {

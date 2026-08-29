@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"os"
@@ -7,10 +7,10 @@ import (
 )
 
 func TestInstanceDefaultsAreDistinct(t *testing.T) {
-	iface0 := defaultInterfaceName(0)
-	iface1 := defaultInterfaceName(1)
-	port0 := defaultListenPort(0)
-	port1 := defaultListenPort(1)
+	iface0 := DefaultInterfaceName(0)
+	iface1 := DefaultInterfaceName(1)
+	port0 := DefaultListenPort(0)
+	port1 := DefaultListenPort(1)
 
 	if iface0 == iface1 {
 		t.Fatalf("expected distinct interface names, got %q for both instance 0 and 1", iface0)
@@ -28,15 +28,15 @@ func TestInstanceDefaultsAreDistinct(t *testing.T) {
 
 // TestResolveRuntimeDefaultsFillsBlankAndZero guards the fix that came
 // out of relay-management's implementation review: liveApplyRelay
-// (relay.go) must resolve BOTH the interface name and the listen port
-// via this function before touching live state, not just the interface
-// name — a config that omits listen_port is legal (wireguard.md) and,
-// if the zero value reached ConfigureInterface directly, would silently
-// rebind WireGuard to a random ephemeral port instead of the documented
-// default.
+// (internal/relay) must resolve BOTH the interface name and the listen
+// port via this function before touching live state, not just the
+// interface name — a config that omits listen_port is legal
+// (wireguard.md) and, if the zero value reached ConfigureInterface
+// directly, would silently rebind WireGuard to a random ephemeral port
+// instead of the documented default.
 func TestResolveRuntimeDefaultsFillsBlankAndZero(t *testing.T) {
 	cfg := &Config{}
-	name, port := resolveRuntimeDefaults(cfg, 4321)
+	name, port := ResolveRuntimeDefaults(cfg, 4321)
 	if name != "wganchor4321" {
 		t.Fatalf("expected the default interface name for a blank interface_name, got %q", name)
 	}
@@ -47,14 +47,14 @@ func TestResolveRuntimeDefaultsFillsBlankAndZero(t *testing.T) {
 
 func TestResolveRuntimeDefaultsPreservesExplicitValues(t *testing.T) {
 	cfg := &Config{InterfaceName: "custom0", ListenPort: 9999}
-	name, port := resolveRuntimeDefaults(cfg, 0)
+	name, port := ResolveRuntimeDefaults(cfg, 0)
 	if name != "custom0" || port != 9999 {
 		t.Fatalf("expected explicit config values to be preserved, got (%q, %d)", name, port)
 	}
 }
 
 func TestResolveConfigPathExplicitMustExist(t *testing.T) {
-	_, _, err := resolveConfigPath(filepath.Join(t.TempDir(), "missing.json"), 0)
+	_, _, err := ResolvePath(filepath.Join(t.TempDir(), "missing.json"), 0)
 	if err == nil {
 		t.Fatal("expected an error for a nonexistent explicit --config path")
 	}
@@ -67,7 +67,7 @@ func TestResolveConfigPathExplicitFound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _, err := resolveConfigPath(path, 0)
+	got, _, err := ResolvePath(path, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestResolveConfigPathExplicitFound(t *testing.T) {
 func TestResolveConfigPathNoneFoundReturnsErrAndChecked(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	_, checked0, err := resolveConfigPath("", 0)
+	_, checked0, err := ResolvePath("", 0)
 	if err == nil {
 		t.Fatal("expected errNoConfigFound when nothing exists")
 	}
@@ -87,7 +87,7 @@ func TestResolveConfigPathNoneFoundReturnsErrAndChecked(t *testing.T) {
 		t.Fatal("expected the checked path list to be non-empty even on failure")
 	}
 
-	_, checked1, err := resolveConfigPath("", 1)
+	_, checked1, err := ResolvePath("", 1)
 	if err == nil {
 		t.Fatal("expected errNoConfigFound when nothing exists")
 	}
@@ -100,22 +100,22 @@ func TestResolveConfigPathNoneFoundReturnsErrAndChecked(t *testing.T) {
 
 func TestResolveConfigPathRejectsDirectory(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := resolveConfigPath(dir, 0); err == nil {
+	if _, _, err := ResolvePath(dir, 0); err == nil {
 		t.Fatal("expected an error when the explicit --config path is a directory")
 	}
 }
 
 func TestValidateInstanceRejectsOutOfRange(t *testing.T) {
-	if err := validateInstance(-1); err == nil {
+	if err := ValidateInstance(-1); err == nil {
 		t.Fatal("expected an error for a negative instance")
 	}
-	if err := validateInstance(maxInstance + 1); err == nil {
+	if err := ValidateInstance(maxInstance + 1); err == nil {
 		t.Fatal("expected an error for an instance pushing listen_port past 65535")
 	}
-	if err := validateInstance(0); err != nil {
+	if err := ValidateInstance(0); err != nil {
 		t.Fatalf("unexpected error for instance 0: %v", err)
 	}
-	if err := validateInstance(maxInstance); err != nil {
+	if err := ValidateInstance(maxInstance); err != nil {
 		t.Fatalf("unexpected error for maxInstance: %v", err)
 	}
 }
@@ -127,8 +127,8 @@ func TestLoadConfigRejectsWrongMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := loadConfig(path); err == nil {
-		t.Fatal("expected loadConfig to refuse a 0644 config file")
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected Load to refuse a 0644 config file")
 	}
 }
 
@@ -148,7 +148,7 @@ func TestLoadConfigParsesSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := loadConfig(path)
+	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

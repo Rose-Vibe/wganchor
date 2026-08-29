@@ -1,4 +1,4 @@
-package main
+package lifecycle
 
 import (
 	"strings"
@@ -52,7 +52,7 @@ func TestUnitFileNameAndUnitName(t *testing.T) {
 // bring-up unit's bare Restart=on-failure) since a clean exit of a
 // long-running watcher is still worth restarting, and
 // StartLimitIntervalSec=0 so systemd's own default start-rate limit
-// never puts the unit into a permanent failed state — watch.go's own
+// never puts the unit into a permanent failed state — internal/watch's own
 // internal backoff already handles a crash-looping `ip monitor rule`
 // without needing the process itself to exit and be restarted.
 func TestWatchUnitTemplateForRole(t *testing.T) {

@@ -78,7 +78,7 @@ warning, not a silent log line easy to miss on a headless box.
 
 ## Lifecycle (systemd, install/uninstall)
 
-Implemented in `lifecycle.go`/`units.go` — see
+Implemented in `internal/lifecycle/lifecycle.go`/`internal/lifecycle/units.go` — see
 `docs/sprints/archive/2026-08-29-wireguard-automation/plan-lifecycle-COMPLETE.md`.
 
 - Ships a systemd *template* unit per role (`wganchor-server@.service`,

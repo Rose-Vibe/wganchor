@@ -1,4 +1,6 @@
-package main
+// Package routing reconciles kernel routing/address/policy-routing state
+// (via ip(8)) against a wganchor instance's desired relay IPs.
+package routing
 
 import (
 	"net"
@@ -6,27 +8,30 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"wganchor/internal/config"
+	"wganchor/internal/sysexec"
 )
 
-// tableForInstance and priorityForInstance derive the client-side policy
+// TableForInstance and PriorityForInstance derive the client-side policy
 // routing table ID and ip-rule priority deterministically from the
 // instance number, reusing the already-collision-checked listen-port
 // formula (docs/arch/wireguard.md's "Client-side policy routing" section)
 // instead of inventing a second collision-prone constant. Instance 0
 // reproduces the exact values validated by hand in the bootstrap PoC
 // (table 60217, priority 20217).
-func tableForInstance(instance int) int {
-	return defaultListenPort(instance)
+func TableForInstance(instance int) int {
+	return config.DefaultListenPort(instance)
 }
 
-func priorityForInstance(instance int) int {
-	return defaultListenPort(instance) - 40000
+// PriorityForInstance is TableForInstance's ip-rule-priority counterpart.
+func PriorityForInstance(instance int) int {
+	return config.DefaultListenPort(instance) - 40000
 }
 
-// diffRelayIPs compares the desired relay IP list against what's
+// DiffRelayIPs compares the desired relay IP list against what's
 // currently live and reports which need to be added and which are stale
 // and need removing. Pure and deterministic (sorted output) for testing.
-func diffRelayIPs(desired, current []string) (toAdd, toRemove []string) {
+func DiffRelayIPs(desired, current []string) (toAdd, toRemove []string) {
 	desiredSet := make(map[string]bool, len(desired))
 	for _, ip := range desired {
 		desiredSet[ip] = true
@@ -97,7 +102,7 @@ func ipRuleSourceToken(tok string) string {
 	return ""
 }
 
-// parseIPRuleShowForTable extracts the source selectors of `ip rule show`
+// ParseIPRuleShowForTable extracts the source selectors of `ip rule show`
 // entries that route to table. Matches fields rather than a substring, so
 // an unrelated rule that happens to contain the same text doesn't count.
 // A wildcard rule (`from all ...`, e.g. an unrelated fwmark-based VPN
@@ -105,7 +110,7 @@ func ipRuleSourceToken(tok string) string {
 // numeric table — this tool only ever creates `from <ip>` rules, and
 // treating "all" as a stale relay IP would issue `ip rule del from all
 // table <N>` against a rule it never created.
-func parseIPRuleShowForTable(output string, table int) []string {
+func ParseIPRuleShowForTable(output string, table int) []string {
 	tableStr := strconv.Itoa(table)
 	var ips []string
 	for _, line := range strings.Split(output, "\n") {
@@ -145,9 +150,9 @@ func (r ReconcileResult) Changed() bool {
 }
 
 // buildReconcileResult assembles a ReconcileResult from the add/remove
-// sets already computed by diffRelayIPs (and, for the client's table
+// sets already computed by DiffRelayIPs (and, for the client's table
 // default route, hasDefaultRoute) — kept as a pure function, independent
-// of runCmd, so it's directly unit-testable.
+// of sysexec, so it's directly unit-testable.
 func buildReconcileResult(addrAdd, addrRemove, routeAdd, routeRemove, ruleAdd, ruleRemove []string) ReconcileResult {
 	return ReconcileResult{
 		AddrsAdded:    addrAdd,
@@ -163,7 +168,7 @@ func buildReconcileResult(addrAdd, addrRemove, routeAdd, routeRemove, ruleAdd, r
 // output/error indicates the table has never had a route added to it —
 // confirmed empirically ("Error: ipv4: FIB table does not exist.",
 // exit 2) — rather than a real failure. Only ever true for a table
-// number that has genuinely never been used; runCmd's own error
+// number that has genuinely never been used; sysexec.RunCmd's own error
 // formatting includes stderr, so err.Error() is enough to check.
 func isFibTableMissingOutput(output string) bool {
 	return strings.Contains(strings.ToLower(output), "fib table does not exist")
@@ -194,20 +199,20 @@ func hasDefaultRoute(output string, name string) bool {
 // configured. Only ever touches routes scoped to dev name, never a
 // blind sweep of the routing table.
 func ReconcileServerRoutes(name string, relayIPs []string) (ReconcileResult, error) {
-	out, err := runCmd("ip", "route", "show", "dev", name)
+	out, err := sysexec.RunCmd("ip", "route", "show", "dev", name)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
 	current := parseRouteShowHostRoutes(out)
-	toAdd, toRemove := diffRelayIPs(relayIPs, current)
+	toAdd, toRemove := DiffRelayIPs(relayIPs, current)
 
 	for _, ip := range toRemove {
-		if _, err := runCmd("ip", "route", "del", ip+"/32", "dev", name); err != nil {
+		if _, err := sysexec.RunCmd("ip", "route", "del", ip+"/32", "dev", name); err != nil {
 			return ReconcileResult{}, err
 		}
 	}
 	for _, ip := range relayIPs {
-		if _, err := runCmd("ip", "route", "replace", ip+"/32", "dev", name); err != nil {
+		if _, err := sysexec.RunCmd("ip", "route", "replace", ip+"/32", "dev", name); err != nil {
 			return ReconcileResult{}, err
 		}
 	}
@@ -220,39 +225,39 @@ func ReconcileServerRoutes(name string, relayIPs []string) (ReconcileResult, err
 // Never adds a kernel default route for name — see plan-tunnel-runtime.md
 // on why a wide AllowedIPs must not become a default-route override.
 func ReconcileClientRouting(name string, relayIPs []string, instance int) (ReconcileResult, error) {
-	table := tableForInstance(instance)
-	priority := priorityForInstance(instance)
+	table := TableForInstance(instance)
+	priority := PriorityForInstance(instance)
 	tableStr := strconv.Itoa(table)
 
-	addrOut, err := runCmd("ip", "-4", "addr", "show", "dev", name)
+	addrOut, err := sysexec.RunCmd("ip", "-4", "addr", "show", "dev", name)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
-	addrAdd, addrRemove := diffRelayIPs(relayIPs, parseAddrShowHostIPs(addrOut))
+	addrAdd, addrRemove := DiffRelayIPs(relayIPs, parseAddrShowHostIPs(addrOut))
 	for _, ip := range addrRemove {
-		if _, err := runCmd("ip", "addr", "del", ip+"/32", "dev", name); err != nil {
+		if _, err := sysexec.RunCmd("ip", "addr", "del", ip+"/32", "dev", name); err != nil {
 			return ReconcileResult{}, err
 		}
 	}
 	for _, ip := range relayIPs {
-		if _, err := runCmd("ip", "addr", "replace", ip+"/32", "dev", name); err != nil {
+		if _, err := sysexec.RunCmd("ip", "addr", "replace", ip+"/32", "dev", name); err != nil {
 			return ReconcileResult{}, err
 		}
 	}
 
-	ruleOut, err := runCmd("ip", "rule", "show")
+	ruleOut, err := sysexec.RunCmd("ip", "rule", "show")
 	if err != nil {
 		return ReconcileResult{}, err
 	}
-	currentRuleIPs := parseIPRuleShowForTable(ruleOut, table)
-	ruleAdd, ruleRemove := diffRelayIPs(relayIPs, currentRuleIPs)
+	currentRuleIPs := ParseIPRuleShowForTable(ruleOut, table)
+	ruleAdd, ruleRemove := DiffRelayIPs(relayIPs, currentRuleIPs)
 	for _, ip := range ruleRemove {
-		if _, err := runCmd("ip", "rule", "del", "from", ip, "table", tableStr); err != nil {
+		if _, err := sysexec.RunCmd("ip", "rule", "del", "from", ip, "table", tableStr); err != nil {
 			return ReconcileResult{}, err
 		}
 	}
 	for _, ip := range ruleAdd {
-		if _, err := runCmd("ip", "rule", "add", "from", ip, "table", tableStr,
+		if _, err := sysexec.RunCmd("ip", "rule", "add", "from", ip, "table", tableStr,
 			"priority", strconv.Itoa(priority)); err != nil {
 			return ReconcileResult{}, err
 		}
@@ -265,7 +270,7 @@ func ReconcileClientRouting(name string, relayIPs []string, instance int) (Recon
 	// bring-up (table 60217 only "exists" once something has been added
 	// to it, which the `replace` below is about to do for the first
 	// time). That's "no default route present", not a real failure.
-	routeTableOut, err := runCmd("ip", "route", "show", "table", tableStr)
+	routeTableOut, err := sysexec.RunCmd("ip", "route", "show", "table", tableStr)
 	if err != nil && !isFibTableMissingOutput(err.Error()) {
 		return ReconcileResult{}, err
 	}
@@ -273,7 +278,7 @@ func ReconcileClientRouting(name string, relayIPs []string, instance int) (Recon
 	if !hasDefaultRoute(routeTableOut, name) {
 		routeAdd = []string{"default"}
 	}
-	if _, err := runCmd("ip", "route", "replace", "default", "dev", name, "table", tableStr); err != nil {
+	if _, err := sysexec.RunCmd("ip", "route", "replace", "default", "dev", name, "table", tableStr); err != nil {
 		return ReconcileResult{}, err
 	}
 
@@ -301,4 +306,6 @@ func ipForwardEnabled(path string) (bool, error) {
 	return strings.TrimSpace(string(data)) == "1", nil
 }
 
-const ipForwardWarning = "warning: net.ipv4.ip_forward is not 1 — inbound relay traffic will not be forwarded"
+// IPForwardWarning is the warning line printed when CheckIPForward finds
+// forwarding disabled.
+const IPForwardWarning = "warning: net.ipv4.ip_forward is not 1 — inbound relay traffic will not be forwarded"

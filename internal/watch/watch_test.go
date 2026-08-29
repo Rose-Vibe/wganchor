@@ -1,13 +1,14 @@
-package main
+package watch
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+	"wganchor/internal/routing"
 )
 
 // TestReconcileOnceRejectsInvalidConfigWithoutReconciling guards the
-// blocking issue from the implementation review: loadConfig alone
+// blocking issue from the implementation review: config.Load alone
 // accepts a semantically-empty config (e.g. relay_ips caught mid-edit,
 // or a fresh `install` skeleton), and without a ValidateConfig call
 // in between, a self-healing daemon would diff that empty desired state
@@ -21,8 +22,8 @@ func TestReconcileOnceRejectsInvalidConfigWithoutReconciling(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	// Valid JSON, valid mode, but relay_ips is empty — exactly the shape
-	// skeletonConfig (lifecycle.go) writes for a fresh install, and what
-	// an editor could leave behind mid-write.
+	// internal/lifecycle's skeletonConfig writes for a fresh install, and
+	// what an editor could leave behind mid-write.
 	if err := os.WriteFile(path, []byte(`{"private_key":"x","peer_public_key":"y","peer_endpoint":"1.2.3.4:1","interface_name":"wganchor-nonexistent-test-iface","relay_ips":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func TestShouldTriggerFlagsUnparsableDeletedLines(t *testing.T) {
 }
 
 func TestDescribeChanges(t *testing.T) {
-	r := ReconcileResult{
+	r := routing.ReconcileResult{
 		AddrsAdded:  []string{"203.0.113.20"},
 		RoutesAdded: []string{"default"},
 		RulesAdded:  []string{"203.0.113.20"},

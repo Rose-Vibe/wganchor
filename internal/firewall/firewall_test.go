@@ -1,4 +1,4 @@
-package main
+package firewall
 
 import "testing"
 
@@ -175,12 +175,12 @@ func TestParsePortSpecValid(t *testing.T) {
 		{"22-22/tcp", 22, 22, "tcp"}, // a degenerate range is legal, normalizes like a single port
 	}
 	for _, c := range cases {
-		start, end, proto, err := parsePortSpec(c.spec)
+		start, end, proto, err := ParsePortSpec(c.spec)
 		if err != nil {
-			t.Fatalf("parsePortSpec(%q): unexpected error: %v", c.spec, err)
+			t.Fatalf("ParsePortSpec(%q): unexpected error: %v", c.spec, err)
 		}
 		if start != c.wantStart || end != c.wantEnd || proto != c.wantProto {
-			t.Fatalf("parsePortSpec(%q) = (%d, %d, %q), want (%d, %d, %q)", c.spec, start, end, proto, c.wantStart, c.wantEnd, c.wantProto)
+			t.Fatalf("ParsePortSpec(%q) = (%d, %d, %q), want (%d, %d, %q)", c.spec, start, end, proto, c.wantStart, c.wantEnd, c.wantProto)
 		}
 	}
 }
@@ -188,7 +188,7 @@ func TestParsePortSpecValid(t *testing.T) {
 func TestParsePortSpecInvalid(t *testing.T) {
 	for _, spec := range []string{
 		"", "8080", "8080/", "/tcp", "8080/sctp", "0/tcp", "65536/tcp", "-1/tcp", "abc/tcp", "8080/tcp/extra",
-		"8080/both",      // expandBothProto's job, never reaches parsePortSpec directly
+		"8080/both",      // ExpandBothProto's job, never reaches ParsePortSpec directly
 		"8010-8000/tcp",  // start > end
 		"abc-8010/tcp",   // non-numeric start
 		"8000-abc/tcp",   // non-numeric end
@@ -197,8 +197,8 @@ func TestParsePortSpecInvalid(t *testing.T) {
 		"8000-/tcp",      // missing end
 		"-8010/tcp",      // missing start (parses as "" before the dash)
 	} {
-		if _, _, _, err := parsePortSpec(spec); err == nil {
-			t.Errorf("parsePortSpec(%q): expected an error, got nil", spec)
+		if _, _, _, err := ParsePortSpec(spec); err == nil {
+			t.Errorf("ParsePortSpec(%q): expected an error, got nil", spec)
 		}
 	}
 }
@@ -226,14 +226,14 @@ func TestFormatPortSpec(t *testing.T) {
 }
 
 func TestExpandBothProtoPassesThroughPlainSpec(t *testing.T) {
-	got := expandBothProto("8080/tcp")
+	got := ExpandBothProto("8080/tcp")
 	if len(got) != 1 || got[0] != "8080/tcp" {
 		t.Fatalf("got %v, want [8080/tcp]", got)
 	}
 }
 
 func TestExpandBothProtoExpandsSinglePort(t *testing.T) {
-	got := expandBothProto("8080/both")
+	got := ExpandBothProto("8080/both")
 	want := []string{"8080/tcp", "8080/udp"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("got %v, want %v", got, want)
@@ -241,7 +241,7 @@ func TestExpandBothProtoExpandsSinglePort(t *testing.T) {
 }
 
 func TestExpandBothProtoExpandsRange(t *testing.T) {
-	got := expandBothProto("8000-8010/both")
+	got := ExpandBothProto("8000-8010/both")
 	want := []string{"8000-8010/tcp", "8000-8010/udp"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("got %v, want %v", got, want)

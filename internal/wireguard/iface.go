@@ -1,8 +1,10 @@
-package main
+package wireguard
 
 import (
 	"fmt"
 	"strings"
+	"wganchor/internal/config"
+	"wganchor/internal/sysexec"
 )
 
 // AllowedIPsForRole computes the WireGuard AllowedIPs list for this side's
@@ -10,7 +12,7 @@ import (
 // to exactly its relay IPs, the client (home) side must accept traffic to
 // any destination — see docs/arch/overview.md's cryptokey-routing finding
 // for why a narrow AllowedIPs breaks the outbound path on the client.
-func AllowedIPsForRole(cfg *Config, role string) []string {
+func AllowedIPsForRole(cfg *config.Config, role string) []string {
 	if role == "client" {
 		return []string{"0.0.0.0/0"}
 	}
@@ -21,10 +23,10 @@ func AllowedIPsForRole(cfg *Config, role string) []string {
 	return allowed
 }
 
-// interfaceExists reports whether an interface named name exists at all
+// InterfaceExists reports whether an interface named name exists at all
 // (of any type), via exit code rather than string-matching output.
-func interfaceExists(name string) bool {
-	return commandSucceeds("ip", "link", "show", name)
+func InterfaceExists(name string) bool {
+	return sysexec.CommandSucceeds("ip", "link", "show", name)
 }
 
 // isWireGuardInterface reports whether an existing interface named name is
@@ -33,7 +35,7 @@ func interfaceExists(name string) bool {
 // different VPN's tunnel) is possible and must fail with an actionable
 // error rather than a confusing downstream `wg set` failure.
 func isWireGuardInterface(name string) bool {
-	return commandSucceeds("wg", "show", name)
+	return sysexec.CommandSucceeds("wg", "show", name)
 }
 
 // EnsureInterface creates the WireGuard interface if it doesn't already
@@ -44,13 +46,13 @@ func isWireGuardInterface(name string) bool {
 // one-time default-enable notice on genuine first-time creation,
 // including after a reboot recreates the interface from scratch.
 func EnsureInterface(name string) (created bool, err error) {
-	if interfaceExists(name) {
+	if InterfaceExists(name) {
 		if !isWireGuardInterface(name) {
 			return false, fmt.Errorf("interface %s already exists and is not a WireGuard device", name)
 		}
 		return false, nil
 	}
-	if _, err := runCmd("ip", "link", "add", name, "type", "wireguard"); err != nil {
+	if _, err := sysexec.RunCmd("ip", "link", "add", name, "type", "wireguard"); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -66,12 +68,12 @@ func EnsureInterface(name string) (created bool, err error) {
 // the real VPS. /dev/stdin sidesteps that confinement entirely rather than
 // working around it by writing into /etc/wireguard/, which
 // docs/arch/wireguard.md deliberately never does.)
-func ConfigureInterface(cfg *Config, role, name string) error {
+func ConfigureInterface(cfg *config.Config, role, name string) error {
 	setArgs := []string{"set", name, "private-key", "/dev/stdin"}
 	if role == "server" {
 		setArgs = append(setArgs, "listen-port", fmt.Sprintf("%d", cfg.ListenPort))
 	}
-	if _, err := runCmdStdin(cfg.PrivateKey, "wg", setArgs...); err != nil {
+	if _, err := sysexec.RunCmdStdin(cfg.PrivateKey, "wg", setArgs...); err != nil {
 		return err
 	}
 
@@ -87,10 +89,10 @@ func ConfigureInterface(cfg *Config, role, name string) error {
 		}
 		peerArgs = append(peerArgs, "persistent-keepalive", fmt.Sprintf("%d", keepalive))
 	}
-	if _, err := runCmd("wg", peerArgs...); err != nil {
+	if _, err := sysexec.RunCmd("wg", peerArgs...); err != nil {
 		return err
 	}
 
-	_, err := runCmd("ip", "link", "set", name, "up")
+	_, err := sysexec.RunCmd("ip", "link", "set", name, "up")
 	return err
 }

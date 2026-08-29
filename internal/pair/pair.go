@@ -1,4 +1,7 @@
-package main
+// Package pair implements `wganchor pair pubkey|peer|run`: exchanging
+// WireGuard public keys between two wganchor instances, per
+// docs/sprints/pairing/plan-pairing.md.
+package pair
 
 import (
 	"bytes"
@@ -10,6 +13,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"wganchor/internal/config"
+	"wganchor/internal/wireguard"
 )
 
 // wgKeyLen is the raw byte length of a WireGuard Curve25519 key (private
@@ -20,14 +25,14 @@ const wgKeyLen = 32
 
 // validatePublicKeyFormat reports whether key is shaped like a WireGuard
 // key: standard base64 encoding a 32-byte value, matching what
-// GenerateKeypair/PublicKeyFromPrivate produce. This is a format check
-// only — it cannot, by itself, tell a public key from a private one (see
-// looksLikePrivateKey for a separate heuristic that helps with that
-// specific mistake). Checked before writing a peer (pair peer) and
-// before placing a key into a remote-exec argv (pair run) — the base64
-// alphabet (A-Za-z0-9+/=) contains no shell metacharacters, so a key
-// that passes this check can never inject anything into a remote
-// command line built from it.
+// wireguard.GenerateKeypair/PublicKeyFromPrivate produce. This is a
+// format check only — it cannot, by itself, tell a public key from a
+// private one (see looksLikePrivateKey for a separate heuristic that
+// helps with that specific mistake). Checked before writing a peer (pair
+// peer) and before placing a key into a remote-exec argv (pair run) —
+// the base64 alphabet (A-Za-z0-9+/=) contains no shell metacharacters,
+// so a key that passes this check can never inject anything into a
+// remote command line built from it.
 func validatePublicKeyFormat(key string) error {
 	decoded, err := base64.StdEncoding.DecodeString(key)
 	if err != nil {
@@ -57,13 +62,13 @@ func looksLikePrivateKey(key string) bool {
 }
 
 // validateEndpoint reports whether endpoint is a well-formed host:port,
-// per validate.go's fail-fast posture — ValidateConfig itself only
+// per internal/config's fail-fast posture — ValidateConfig itself only
 // checks non-emptiness, so this catches a malformed value here instead
 // of surfacing later as an opaque wg/dial error. net.SplitHostPort alone
 // only validates the split syntax (it accepts a non-numeric port, e.g.
 // "host:abc"), so the port is additionally parsed as an integer in
-// range, matching parsePortSpec's (firewall.go) existing precedent for
-// this exact class of check.
+// range, matching internal/firewall's ParsePortSpec's existing precedent
+// for this exact class of check.
 func validateEndpoint(endpoint string) error {
 	host, port, err := net.SplitHostPort(endpoint)
 	if err != nil {
@@ -89,14 +94,14 @@ func truncateKeyForDisplay(key string) string {
 	return key[:n]
 }
 
-// PairPubkey ensures instance's config at path has a keypair —
-// self-provisioning one via EnsureKeys if it doesn't yet, exactly as
-// server/client's first run does — and returns its public key.
-// Operational messages go to stderr, never stdout: pair pubkey's stdout
-// is a scripting primitive (see runPairPubkeyCmd), so it must carry
-// nothing but the key itself.
-func PairPubkey(cfg *Config, path string) (string, error) {
-	pub, generated, err := EnsureKeys(cfg, path)
+// Pubkey ensures instance's config at path has a keypair —
+// self-provisioning one via wireguard.EnsureKeys if it doesn't yet,
+// exactly as server/client's first run does — and returns its public
+// key. Operational messages go to stderr, never stdout: pair pubkey's
+// stdout is a scripting primitive (see cmd/wganchor's runPairPubkeyCmd),
+// so it must carry nothing but the key itself.
+func Pubkey(cfg *config.Config, path string) (string, error) {
+	pub, generated, err := wireguard.EnsureKeys(cfg, path)
 	if err != nil {
 		return "", err
 	}
@@ -106,7 +111,7 @@ func PairPubkey(cfg *Config, path string) (string, error) {
 	return pub, nil
 }
 
-// PairPeer validates and records publicKey (and endpoint, if non-empty)
+// Peer validates and records publicKey (and endpoint, if non-empty)
 // as instance's peer identity, persisting only if something actually
 // changed — a repeat call with identical arguments is a no-op write, so
 // pair run can be re-run freely. Prints a notice to notices (os.Stderr in
@@ -117,7 +122,7 @@ func PairPubkey(cfg *Config, path string) (string, error) {
 // attempt" mistake this command exists to make visible instead of easy.
 // Also warns (never rejects — see looksLikePrivateKey) if publicKey looks
 // like it might actually be a private key.
-func PairPeer(cfg *Config, path string, publicKey string, endpoint string, notices io.Writer) error {
+func Peer(cfg *config.Config, path string, publicKey string, endpoint string, notices io.Writer) error {
 	if err := validatePublicKeyFormat(publicKey); err != nil {
 		return err
 	}
@@ -147,7 +152,7 @@ func PairPeer(cfg *Config, path string, publicKey string, endpoint string, notic
 	if !changed {
 		return nil
 	}
-	return persistConfig(cfg, path)
+	return config.Persist(cfg, path)
 }
 
 // parseRemoteExecTemplate splits template on whitespace and substitutes
@@ -189,8 +194,8 @@ func parseRemoteExecTemplate(template, target string) ([]string, error) {
 // already substituted) followed by remoteArgs (the remote wganchor
 // invocation), capturing stdout (the only channel pair run ever parses)
 // while passing stdin/stderr straight through to the operator's own
-// terminal. This deliberately does not reuse runCmd/exec.go's
-// buffer-both-streams contract: runCmd is right for a local,
+// terminal. This deliberately does not reuse internal/sysexec's
+// buffer-both-streams contract: sysexec.RunCmd is right for a local,
 // non-interactive nft/ip call, but ssh (the default remote-exec target)
 // may need an interactive tty for host-key confirmation, a password, or
 // a passphrase-protected key, and any remote-side error text should
@@ -217,7 +222,7 @@ func runRemote(prefix []string, remoteArgs ...string) (string, error) {
 // deriveEndpoint returns a convenience default for --endpoint when it
 // isn't given explicitly: remote's host (stripping any "user@" prefix)
 // paired with the standard listen-port formula for remoteInstance, the
-// same one main.go's run() already uses for a config missing
+// same one cmd/wganchor's run() already uses for a config missing
 // listen_port. Not a guarantee: wrong if the remote's listen_port was
 // overridden away from the formula, or if remote is an ssh_config Host
 // alias rather than a directly-dialable hostname — both documented in
@@ -231,21 +236,22 @@ func deriveEndpoint(remote string, remoteInstance int) string {
 	if i := strings.LastIndex(host, "@"); i != -1 {
 		host = host[i+1:]
 	}
-	return net.JoinHostPort(host, strconv.Itoa(defaultListenPort(remoteInstance)))
+	return net.JoinHostPort(host, strconv.Itoa(config.DefaultListenPort(remoteInstance)))
 }
 
 // isSelfPair reports whether localPub and remotePub are the same key —
-// the pure comparison behind PairRun's self-pairing guard (step 3),
+// the pure comparison behind Run's self-pairing guard (step 3),
 // extracted so it's directly unit-testable without a real remote exec.
 func isSelfPair(localPub, remotePub string) bool {
 	return localPub == remotePub
 }
 
-// PairRunOptions configures PairRun. RemoteInstance and Endpoint are the
+// RunOptions configures Run. RemoteInstance and Endpoint are the
 // only fields with meaningful zero values requiring special handling —
-// see runPairRunCmd, which resolves RemoteInstance's default before
-// calling PairRun, and PairRun itself, which derives Endpoint's default.
-type PairRunOptions struct {
+// see cmd/wganchor's runPairRunCmd, which resolves RemoteInstance's
+// default before calling Run, and Run itself, which derives
+// Endpoint's default.
+type RunOptions struct {
 	Instance       int
 	RemoteInstance int
 	Remote         string
@@ -254,9 +260,9 @@ type PairRunOptions struct {
 	ConfigPath     string
 }
 
-// PairRun performs a full pairing exchange against a remote wganchor
+// Run performs a full pairing exchange against a remote wganchor
 // instance: fetch each side's public key and write it as the other's
-// peer. Every step is itself a PairPubkey/PairPeer call — locally
+// peer. Every step is itself a Pubkey/Peer call — locally
 // in-process, or remotely via runRemote — so pair run never does
 // anything a human couldn't already do by hand with pair pubkey/pair
 // peer and their own copy of ssh. See plan-pairing.md for the full
@@ -268,11 +274,11 @@ type PairRunOptions struct {
 // config is loaded or any remote command is run — a malformed value here
 // must never leave the two sides paired asymmetrically (one written,
 // the other not) or generate a local keypair before failing.
-func PairRun(opts PairRunOptions) error {
-	if err := validateInstance(opts.Instance); err != nil {
+func Run(opts RunOptions) error {
+	if err := config.ValidateInstance(opts.Instance); err != nil {
 		return fmt.Errorf("--instance: %w", err)
 	}
-	if err := validateInstance(opts.RemoteInstance); err != nil {
+	if err := config.ValidateInstance(opts.RemoteInstance); err != nil {
 		return fmt.Errorf("--remote-instance: %w", err)
 	}
 
@@ -289,11 +295,11 @@ func PairRun(opts PairRunOptions) error {
 		return fmt.Errorf("resolving local peer_endpoint: %w", err)
 	}
 
-	localPath, checked, err := resolveConfigPath(opts.ConfigPath, opts.Instance)
+	localPath, checked, err := config.ResolvePath(opts.ConfigPath, opts.Instance)
 	if err != nil {
 		return fmt.Errorf("no config found for instance %d (checked: %s)", opts.Instance, strings.Join(checked, ", "))
 	}
-	localCfg, err := loadConfig(localPath)
+	localCfg, err := config.Load(localPath)
 	if err != nil {
 		return err
 	}
@@ -310,7 +316,7 @@ func PairRun(opts PairRunOptions) error {
 	// Step 1: local pubkey (in-process — nothing to shell out to for
 	// the local side). Validated before it's ever placed into a
 	// remote-exec argv in step 4.
-	localPub, err := PairPubkey(localCfg, localPath)
+	localPub, err := Pubkey(localCfg, localPath)
 	if err != nil {
 		return fmt.Errorf("local pubkey: %w", err)
 	}
@@ -346,7 +352,7 @@ func PairRun(opts PairRunOptions) error {
 	}
 
 	// Step 5: set peer locally. endpoint was already validated above.
-	if err := PairPeer(localCfg, localPath, remotePub, endpoint, os.Stderr); err != nil {
+	if err := Peer(localCfg, localPath, remotePub, endpoint, os.Stderr); err != nil {
 		return fmt.Errorf("setting local peer: %w", err)
 	}
 	return nil

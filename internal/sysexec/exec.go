@@ -1,4 +1,6 @@
-package main
+// Package sysexec runs external system commands (ip/wg/nft/systemctl)
+// with consistent stdout/stderr capture and error formatting.
+package sysexec
 
 import (
 	"bytes"
@@ -7,10 +9,10 @@ import (
 	"strings"
 )
 
-// runCmd runs name with args and returns trimmed stdout. On failure the
+// RunCmd runs name with args and returns trimmed stdout. On failure the
 // error includes stderr, since exec.Command's bare error ("exit status 1")
 // is useless for diagnosing an ip/wg failure.
-func runCmd(name string, args ...string) (string, error) {
+func RunCmd(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:gosec // callers always pass a fixed system binary (ip/wg/nft/systemctl) with internally-constructed args, never external/untrusted input
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -21,9 +23,9 @@ func runCmd(name string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// runCmdStdin is runCmd but feeds stdin to the child process — used so a
+// RunCmdStdin is RunCmd but feeds stdin to the child process — used so a
 // private key can be piped in rather than ever appearing in argv.
-func runCmdStdin(stdin string, name string, args ...string) (string, error) {
+func RunCmdStdin(stdin string, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...) //nolint:gosec // callers always pass a fixed system binary with internally-constructed args, never external/untrusted input
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
@@ -35,9 +37,9 @@ func runCmdStdin(stdin string, name string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// commandSucceeds runs name with args and reports only whether it
+// CommandSucceeds runs name with args and reports only whether it
 // exited zero, for existence/type checks where stdout doesn't matter.
-func commandSucceeds(name string, args ...string) bool {
+func CommandSucceeds(name string, args ...string) bool {
 	cmd := exec.Command(name, args...) //nolint:gosec // callers always pass a fixed system binary with internally-constructed args, never external/untrusted input
 	return cmd.Run() == nil
 }

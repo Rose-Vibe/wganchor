@@ -1,4 +1,4 @@
-package main
+package pair
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"wganchor/internal/config"
+	"wganchor/internal/wireguard"
 )
 
 // Real keys generated via `wg genkey`/`wg pubkey` for this test file —
@@ -54,7 +56,7 @@ func TestValidatePublicKeyFormatEmpty(t *testing.T) {
 // catch that mistake — see looksLikePrivateKey for a separate, imperfect
 // heuristic that helps with it instead.
 func TestValidatePublicKeyFormatCannotDistinguishPrivateFromPublic(t *testing.T) {
-	priv, _, err := GenerateKeypair()
+	priv, _, err := wireguard.GenerateKeypair()
 	if err != nil {
 		t.Skipf("wg not available to generate a real private key: %v", err)
 	}
@@ -82,7 +84,7 @@ func TestLooksLikePrivateKeyDoesNotFlagNonClampedSample(t *testing.T) {
 }
 
 func TestLooksLikePrivateKeyFlagsRealPrivateKey(t *testing.T) {
-	priv, _, err := GenerateKeypair()
+	priv, _, err := wireguard.GenerateKeypair()
 	if err != nil {
 		t.Skipf("wg not available to generate a real private key: %v", err)
 	}
@@ -226,8 +228,8 @@ func TestDeriveEndpointBracketsIPv6Host(t *testing.T) {
 	}
 }
 
-func newTestConfig() *Config {
-	return &Config{
+func newTestConfig() *config.Config {
+	return &config.Config{
 		PrivateKey: "unused-in-these-tests",
 		RelayIPs:   []string{"203.0.113.1"},
 	}
@@ -237,15 +239,15 @@ func TestPairPeerWritesNewPeer(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := PairPeer(cfg, path, samplePubKeyA, "vps.example.com:60217", io.Discard); err != nil {
+	if err := Peer(cfg, path, samplePubKeyA, "vps.example.com:60217", io.Discard); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := loadConfig(path)
+	got, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,11 +263,11 @@ func TestPairPeerRejectsInvalidPublicKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := PairPeer(cfg, path, "not-a-valid-key", "", io.Discard); err == nil {
+	if err := Peer(cfg, path, "not-a-valid-key", "", io.Discard); err == nil {
 		t.Fatal("expected an error for an invalid public key")
 	}
 	if cfg.PeerPublicKey != "" {
@@ -277,11 +279,11 @@ func TestPairPeerRejectsInvalidEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := PairPeer(cfg, path, samplePubKeyA, "not-an-endpoint", io.Discard); err == nil {
+	if err := Peer(cfg, path, samplePubKeyA, "not-an-endpoint", io.Discard); err == nil {
 		t.Fatal("expected an error for an invalid endpoint")
 	}
 	if cfg.PeerPublicKey != "" {
@@ -291,16 +293,16 @@ func TestPairPeerRejectsInvalidEndpoint(t *testing.T) {
 
 // TestPairPeerIdempotentNoWriteWhenUnchanged mirrors
 // TestWriteWatchUnitIfChangedLeavesUpToDateContentAlone's mtime-based
-// no-op check (lifecycle_test.go) — the exit criterion this guards is
+// no-op check (internal/lifecycle) — the exit criterion this guards is
 // "re-running pair run twice doesn't needlessly rewrite the file."
 func TestPairPeerIdempotentNoWriteWhenUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
-	if err := PairPeer(cfg, path, samplePubKeyB, "vps.example.com:60217", io.Discard); err != nil {
+	if err := Peer(cfg, path, samplePubKeyB, "vps.example.com:60217", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 
@@ -310,7 +312,7 @@ func TestPairPeerIdempotentNoWriteWhenUnchanged(t *testing.T) {
 	}
 
 	var notices bytes.Buffer
-	if err := PairPeer(cfg, path, samplePubKeyB, "vps.example.com:60217", &notices); err != nil {
+	if err := Peer(cfg, path, samplePubKeyB, "vps.example.com:60217", &notices); err != nil {
 		t.Fatal(err)
 	}
 
@@ -331,16 +333,16 @@ func TestPairPeerReplacesExistingPeer(t *testing.T) {
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
 	cfg.PeerPublicKey = samplePubKeyA
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
 	var notices bytes.Buffer
-	if err := PairPeer(cfg, path, samplePubKeyB, "", &notices); err != nil {
+	if err := Peer(cfg, path, samplePubKeyB, "", &notices); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, err := loadConfig(path)
+	got, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,12 +363,12 @@ func TestPairPeerWarnsWhenPublicKeyLooksLikePrivateKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
 	var notices bytes.Buffer
-	if err := PairPeer(cfg, path, samplePubKeyA, "", &notices); err != nil {
+	if err := Peer(cfg, path, samplePubKeyA, "", &notices); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(notices.String(), "looks like it might be a WireGuard *private* key") {
@@ -378,12 +380,12 @@ func TestPairPeerNoWarningForOrdinaryPublicKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
 	var notices bytes.Buffer
-	if err := PairPeer(cfg, path, samplePubKeyB, "", &notices); err != nil {
+	if err := Peer(cfg, path, samplePubKeyB, "", &notices); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if strings.Contains(notices.String(), "private") {

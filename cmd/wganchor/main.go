@@ -9,6 +9,14 @@ import (
 	"os"
 	"strings"
 	"time"
+	"wganchor/internal/config"
+	"wganchor/internal/firewall"
+	"wganchor/internal/lifecycle"
+	"wganchor/internal/pair"
+	"wganchor/internal/relay"
+	"wganchor/internal/routing"
+	"wganchor/internal/watch"
+	"wganchor/internal/wireguard"
 )
 
 func main() {
@@ -55,8 +63,8 @@ func usage() {
 
 // runWatchCmd parses `wganchor watch <server|client> [--instance N]
 // [--config PATH] [--interval DURATION]` and runs the reconciliation
-// watch loop (watch.go). Shares resolveConfigPath with run() so it picks
-// up the same config, for parity with server/client rather than a
+// watch loop (internal/watch). Shares config.ResolvePath with run() so it
+// picks up the same config, for parity with server/client rather than a
 // separate lookup mechanism.
 func runWatchCmd(args []string) {
 	role, rest := parseLifecycleArgs("watch", "[--instance N] [--config PATH] [--interval DURATION]", args)
@@ -66,19 +74,19 @@ func runWatchCmd(args []string) {
 	interval := fs.Duration("interval", 5*time.Minute, "periodic reconciliation backstop interval")
 	_ = fs.Parse(rest) // flag.ExitOnError already exits the process on a parse failure
 
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor watch: %v\n", err)
 		os.Exit(1)
 	}
 
-	path, checked, err := resolveConfigPath(*configPath, *instance)
+	path, checked, err := config.ResolvePath(*configPath, *instance)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor watch: no config found for instance %d\n", *instance)
 		fmt.Fprintf(os.Stderr, "  checked: %s\n", strings.Join(checked, ", "))
 		os.Exit(1)
 	}
 
-	if err := runWatch(role, *instance, path, *interval); err != nil {
+	if err := watch.Run(role, *instance, path, *interval); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor watch: %v\n", err)
 		os.Exit(1)
 	}
@@ -86,12 +94,12 @@ func runWatchCmd(args []string) {
 
 // runFirewallCmd parses `wganchor firewall <enable|allow|deny|disable>
 // --instance N [--port <port|start-end>/<tcp|udp|both>]` and delegates
-// to the Firewall* functions (firewall.go). No --role flag — resolving
-// the interface only needs the instance number, and the firewall
-// mechanism doesn't care which role created the interface
+// to the Firewall* functions (internal/firewall). No --role flag —
+// resolving the interface only needs the instance number, and the
+// firewall mechanism doesn't care which role created the interface
 // (docs/arch/firewall.md). `/both` is expanded into its tcp+udp pair
-// here, at the CLI layer, before either ever reaches parsePortSpec or a
-// Firewall* call — see expandBothProto (firewall.go).
+// here, at the CLI layer, before either ever reaches ParsePortSpec or a
+// Firewall* call — see firewall.ExpandBothProto.
 func runFirewallCmd(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: wganchor firewall <enable|allow|deny|disable> --instance N [--port <port|start-end>/<tcp|udp|both>]")
@@ -108,7 +116,7 @@ func runFirewallCmd(args []string) {
 	port := fs.String("port", "", "port spec <port|start-end>/<tcp|udp|both>, e.g. 8080/tcp, 8000-8010/udp, 53/both (required for allow/deny)")
 	_ = fs.Parse(args[1:]) // flag.ExitOnError already exits the process on a parse failure
 
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor firewall %s: %v\n", sub, err)
 		os.Exit(1)
 	}
@@ -116,30 +124,30 @@ func runFirewallCmd(args []string) {
 	var cmdErr error
 	switch sub {
 	case "enable":
-		cmdErr = FirewallEnable(*instance)
+		cmdErr = firewall.Enable(*instance)
 	case "disable":
-		cmdErr = FirewallDisable(*instance)
+		cmdErr = firewall.Disable(*instance)
 	case "allow", "deny":
 		if *port == "" {
 			fmt.Fprintf(os.Stderr, "wganchor firewall %s: --port is required, e.g. --port 8080/tcp\n", sub)
 			os.Exit(1)
 		}
-		specs := expandBothProto(*port)
+		specs := firewall.ExpandBothProto(*port)
 		for i, spec := range specs {
-			start, end, proto, perr := parsePortSpec(spec)
+			start, end, proto, perr := firewall.ParsePortSpec(spec)
 			if perr != nil {
 				fmt.Fprintf(os.Stderr, "wganchor firewall %s: %v\n", sub, perr)
 				os.Exit(1)
 			}
 			if sub == "allow" {
-				cmdErr = FirewallAllow(*instance, start, end, proto)
+				cmdErr = firewall.Allow(*instance, start, end, proto)
 			} else {
-				cmdErr = FirewallDeny(*instance, start, end, proto)
+				cmdErr = firewall.Deny(*instance, start, end, proto)
 			}
 			if cmdErr != nil {
 				// A /both spec expands to two independent, individually
-				// idempotent calls (firewall.go's expandBothProto) — if
-				// the second one fails, the first already succeeded and
+				// idempotent calls (firewall.ExpandBothProto) — if the
+				// second one fails, the first already succeeded and
 				// persisted. Say so, so the operator doesn't assume
 				// *nothing* happened: a plain re-run of the same command
 				// converges correctly either way.
@@ -159,9 +167,9 @@ func runFirewallCmd(args []string) {
 }
 
 // runRelayCmd parses `wganchor relay <add|remove> <server|client>
-// --instance N --ip <ipv4>` and delegates to RelayAdd/RelayRemove
-// (relay.go). Unlike firewall, role IS a required positional argument
-// here — the two roles' live-apply mechanisms genuinely differ (see
+// --instance N --ip <ipv4>` and delegates to relay.Add/Remove.
+// Unlike firewall, role IS a required positional argument here — the two
+// roles' live-apply mechanisms genuinely differ (see
 // docs/sprints/relay-and-firewall-ops/plan-relay-management.md's Goal
 // section), the same reason install/uninstall/watch already take role
 // positionally.
@@ -183,7 +191,7 @@ func runRelayCmd(args []string) {
 	ip := fs.String("ip", "", "relay IPv4 address (required)")
 	_ = fs.Parse(rest) // flag.ExitOnError already exits the process on a parse failure
 
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor relay %s: %v\n", sub, err)
 		os.Exit(1)
 	}
@@ -194,9 +202,9 @@ func runRelayCmd(args []string) {
 
 	var cmdErr error
 	if sub == "add" {
-		cmdErr = RelayAdd(role, *instance, *ip)
+		cmdErr = relay.Add(role, *instance, *ip)
 	} else {
-		cmdErr = RelayRemove(role, *instance, *ip)
+		cmdErr = relay.Remove(role, *instance, *ip)
 	}
 	if cmdErr != nil {
 		fmt.Fprintf(os.Stderr, "wganchor relay %s: %v\n", sub, cmdErr)
@@ -232,7 +240,7 @@ func runPairCmd(args []string) {
 // runPairPubkeyCmd prints exactly the instance's public key on stdout —
 // a scripting primitive, both for a human's own script and for
 // runPairRunCmd's remote invocation. Any operational message (e.g. "a
-// new keypair was generated") is PairPubkey's job to send to stderr
+// new keypair was generated") is pair.Pubkey's job to send to stderr
 // instead, never stdout.
 func runPairPubkeyCmd(args []string) {
 	fs := flag.NewFlagSet("pair pubkey", flag.ExitOnError)
@@ -240,22 +248,22 @@ func runPairPubkeyCmd(args []string) {
 	configPath := fs.String("config", "", "explicit path to config file, overrides the default lookup")
 	_ = fs.Parse(args) // flag.ExitOnError already exits the process on a parse failure
 
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: %v\n", err)
 		os.Exit(1)
 	}
-	path, checked, err := resolveConfigPath(*configPath, *instance)
+	path, checked, err := config.ResolvePath(*configPath, *instance)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: no config found for instance %d\n", *instance)
 		fmt.Fprintf(os.Stderr, "  checked: %s\n", strings.Join(checked, ", "))
 		os.Exit(1)
 	}
-	cfg, err := loadConfig(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: %v\n", err)
 		os.Exit(1)
 	}
-	pub, err := PairPubkey(cfg, path)
+	pub, err := pair.Pubkey(cfg, path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair pubkey: %v\n", err)
 		os.Exit(1)
@@ -273,7 +281,7 @@ func runPairPeerCmd(args []string) {
 	endpoint := fs.String("endpoint", "", "the peer's host:port, e.g. vps.example.com:60217 (optional)")
 	_ = fs.Parse(args) // flag.ExitOnError already exits the process on a parse failure
 
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair peer: %v\n", err)
 		os.Exit(1)
 	}
@@ -281,18 +289,18 @@ func runPairPeerCmd(args []string) {
 		fmt.Fprintln(os.Stderr, "wganchor pair peer: --public-key is required")
 		os.Exit(1)
 	}
-	path, checked, err := resolveConfigPath(*configPath, *instance)
+	path, checked, err := config.ResolvePath(*configPath, *instance)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair peer: no config found for instance %d\n", *instance)
 		fmt.Fprintf(os.Stderr, "  checked: %s\n", strings.Join(checked, ", "))
 		os.Exit(1)
 	}
-	cfg, err := loadConfig(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair peer: %v\n", err)
 		os.Exit(1)
 	}
-	if err := PairPeer(cfg, path, *publicKey, *endpoint, os.Stderr); err != nil {
+	if err := pair.Peer(cfg, path, *publicKey, *endpoint, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair peer: %v\n", err)
 		os.Exit(1)
 	}
@@ -300,7 +308,7 @@ func runPairPeerCmd(args []string) {
 
 // runPairRunCmd is the pair-exchange orchestrator: fetches this
 // instance's pubkey and --remote's pubkey (via --remote-exec, default
-// "ssh {}"), and writes each as the other's peer — see PairRun.
+// "ssh {}"), and writes each as the other's peer — see pair.Run.
 func runPairRunCmd(args []string) {
 	fs := flag.NewFlagSet("pair run", flag.ExitOnError)
 	instance := fs.Int("instance", 0, "local instance number (default 0)")
@@ -353,7 +361,7 @@ notes:
 		fmt.Fprintln(os.Stderr, "wganchor pair run: --remote is required")
 		os.Exit(1)
 	}
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair run: %v\n", err)
 		os.Exit(1)
 	}
@@ -365,12 +373,12 @@ notes:
 	if !remoteInstanceSet {
 		ri = *instance
 	}
-	if err := validateInstance(ri); err != nil {
+	if err := config.ValidateInstance(ri); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor pair run: --remote-instance: %v\n", err)
 		os.Exit(1)
 	}
 
-	err := PairRun(PairRunOptions{
+	err := pair.Run(pair.RunOptions{
 		Instance:       *instance,
 		RemoteInstance: ri,
 		Remote:         *remote,
@@ -386,7 +394,7 @@ notes:
 }
 
 // runInstall and runUninstall parse the shared `<role> [--instance N]`
-// shape, then delegate to InstallInstance/UninstallInstance (lifecycle.go).
+// shape, then delegate to lifecycle.InstallInstance/UninstallInstance.
 func runInstall(args []string) {
 	role, rest := parseLifecycleArgs("install", "[--instance N] [--no-watch]", args)
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
@@ -394,11 +402,11 @@ func runInstall(args []string) {
 	noWatch := fs.Bool("no-watch", false, "don't install/enable the reconciliation watch companion (on by default)")
 	_ = fs.Parse(rest) // flag.ExitOnError already exits the process on a parse failure
 
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor install: %v\n", err)
 		os.Exit(1)
 	}
-	if err := InstallInstance(role, *instance, !*noWatch); err != nil {
+	if err := lifecycle.InstallInstance(role, *instance, !*noWatch); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor install: %v\n", err)
 		os.Exit(1)
 	}
@@ -411,11 +419,11 @@ func runUninstall(args []string) {
 	purge := fs.Bool("purge", false, "also remove the config and interface for this instance")
 	_ = fs.Parse(rest) // flag.ExitOnError already exits the process on a parse failure
 
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor uninstall: %v\n", err)
 		os.Exit(1)
 	}
-	if err := UninstallInstance(role, *instance, *purge); err != nil {
+	if err := lifecycle.UninstallInstance(role, *instance, *purge); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor uninstall: %v\n", err)
 		os.Exit(1)
 	}
@@ -445,15 +453,15 @@ func run(role string, args []string) {
 			"of a security default; `wganchor firewall disable` is the durable opt-out that survives a reboot")
 	_ = fs.Parse(args) // flag.ExitOnError already exits the process on a parse failure
 
-	if err := validateInstance(*instance); err != nil {
+	if err := config.ValidateInstance(*instance); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 		os.Exit(1)
 	}
 
-	ifaceDefault := defaultInterfaceName(*instance)
-	portDefault := defaultListenPort(*instance)
+	ifaceDefault := config.DefaultInterfaceName(*instance)
+	portDefault := config.DefaultListenPort(*instance)
 
-	path, checked, err := resolveConfigPath(*configPath, *instance)
+	path, checked, err := config.ResolvePath(*configPath, *instance)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: no config found for instance %d\n", role, *instance)
 		fmt.Fprintf(os.Stderr, "  checked: %s\n", strings.Join(checked, ", "))
@@ -462,20 +470,20 @@ func run(role string, args []string) {
 		os.Exit(1)
 	}
 
-	cfg, err := loadConfig(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 		os.Exit(1)
 	}
 
 	// interface_name/listen_port default to the per-instance formula when
-	// absent from the config (resolveRuntimeDefaults), matching
+	// absent from the config (config.ResolveRuntimeDefaults), matching
 	// wireguard.md's "defaults to wganchor<N> [...], overridable" wording
 	// — a config missing them would otherwise reach `ip link add ""` (an
 	// opaque ip(8) error) or `wg set ... listen-port 0` (silently binds a
 	// random port instead of the documented one), rather than failing the
 	// way the pre-flight validation below is meant to.
-	cfg.InterfaceName, cfg.ListenPort = resolveRuntimeDefaults(cfg, *instance)
+	cfg.InterfaceName, cfg.ListenPort = config.ResolveRuntimeDefaults(cfg, *instance)
 
 	// Key self-provisioning happens unconditionally on load, before the
 	// peer_public_key check below: each side is expected to be able to
@@ -483,7 +491,7 @@ func run(role string, args []string) {
 	// before it knows the other side's key — that's the manual exchange
 	// step (docs/arch/wireguard.md), not something peer_public_key being
 	// blank should block.
-	pubKey, generated, err := EnsureKeys(cfg, path)
+	pubKey, generated, err := wireguard.EnsureKeys(cfg, path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 		os.Exit(1)
@@ -492,29 +500,29 @@ func run(role string, args []string) {
 		fmt.Printf("generated a new keypair; public key: %s\n", pubKey)
 	}
 
-	if err := ValidateConfig(cfg, role); err != nil {
+	if err := config.ValidateConfig(cfg, role); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 		os.Exit(1)
 	}
 
 	name := cfg.InterfaceName
-	created, err := EnsureInterface(name)
+	created, err := wireguard.EnsureInterface(name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 		os.Exit(1)
 	}
-	if err := ConfigureInterface(cfg, role, name); err != nil {
+	if err := wireguard.ConfigureInterface(cfg, role, name); err != nil {
 		fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 		os.Exit(1)
 	}
 
 	if role == "server" {
-		if _, err := ReconcileServerRoutes(name, cfg.RelayIPs); err != nil {
+		if _, err := routing.ReconcileServerRoutes(name, cfg.RelayIPs); err != nil {
 			fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 			os.Exit(1)
 		}
-		if ok, ipfErr := CheckIPForward(); ipfErr == nil && !ok {
-			fmt.Fprintln(os.Stderr, ipForwardWarning)
+		if ok, ipfErr := routing.CheckIPForward(); ipfErr == nil && !ok {
+			fmt.Fprintln(os.Stderr, routing.IPForwardWarning)
 		}
 	} else {
 		// Client-side only, per docs/arch/firewall.md's scope: the
@@ -536,21 +544,21 @@ func run(role string, args []string) {
 		// and on any firewall failure that window would never close.
 		firewallActive := !cfg.DisableFirewall && !*noFirewall
 		if firewallActive {
-			if !nftAvailable() {
-				fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, errNftMissing)
+			if !firewall.NftAvailable() {
+				fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, firewall.ErrNftMissing)
 				os.Exit(1)
 			}
-			if err := ensureFirewallScaffold(name, *instance); err != nil {
+			if err := firewall.EnsureScaffold(name, *instance); err != nil {
 				fmt.Fprintf(os.Stderr, "wganchor %s: firewall: %v\n", role, err)
 				os.Exit(1)
 			}
-			if err := applyFirewallAllowedPorts(*instance, cfg.FirewallAllowedPorts); err != nil {
+			if err := firewall.ApplyAllowedPorts(*instance, cfg.FirewallAllowedPorts); err != nil {
 				fmt.Fprintf(os.Stderr, "wganchor %s: firewall: %v\n", role, err)
 				os.Exit(1)
 			}
 		}
 
-		if _, err := ReconcileClientRouting(name, cfg.RelayIPs, *instance); err != nil {
+		if _, err := routing.ReconcileClientRouting(name, cfg.RelayIPs, *instance); err != nil {
 			fmt.Fprintf(os.Stderr, "wganchor %s: %v\n", role, err)
 			os.Exit(1)
 		}

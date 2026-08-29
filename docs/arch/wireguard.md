@@ -194,7 +194,7 @@ to "replace who's authorized." Fixing `ConfigureInterface` to prune
 stale peers is future work, not part of this plan.
 
 **Related known gap (`relay add`/`remove`, `wganchor relay` sprint)**:
-`wganchor watch`'s periodic reconciliation backstop (`watch.go`) only
+`wganchor watch`'s periodic reconciliation backstop (`internal/watch/watch.go`) only
 ever calls the `Reconcile*` routing functions on its interval, never
 `ConfigureInterface` — so on the **server** role specifically, if
 something external ever reset the live peer's `AllowedIPs` between

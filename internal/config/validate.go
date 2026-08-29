@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -22,7 +22,7 @@ func ValidateConfig(cfg *Config, role string) error {
 	}
 	seen := make(map[string]bool, len(cfg.RelayIPs))
 	for i, raw := range cfg.RelayIPs {
-		if err := validateRelayIP(raw); err != nil {
+		if err := ValidateRelayIP(raw); err != nil {
 			return fmt.Errorf("relay_ips[%d] %w", i, err)
 		}
 		if seen[raw] {
@@ -33,14 +33,15 @@ func ValidateConfig(cfg *Config, role string) error {
 	return nil
 }
 
-// validateRelayIP validates a single relay_ips entry: IPv4 only, since
-// EnsureInterface/ConfigureInterface and the routing reconciliation logic
-// all assume /32 IPv4 addresses (ip -4 addr show, ip route show without
-// -6) — an IPv6 entry would parse here and then fail confusingly three
-// layers down. Extracted out of ValidateConfig's loop so `wganchor relay
-// add`/`remove` (relay.go) can run the exact same check against a single
-// --ip flag value, rather than a second copy that could drift.
-func validateRelayIP(raw string) error {
+// ValidateRelayIP validates a single relay_ips entry: IPv4 only, since
+// AllowedIPsForRole/ConfigureInterface and the routing reconciliation
+// logic all assume /32 IPv4 addresses (ip -4 addr show, ip route show
+// without -6) — an IPv6 entry would parse here and then fail confusingly
+// three layers down. Extracted out of ValidateConfig's loop so `wganchor
+// relay add`/`remove` (internal/relay) can run the exact same check
+// against a single --ip flag value, rather than a second copy that could
+// drift.
+func ValidateRelayIP(raw string) error {
 	ip := net.ParseIP(raw)
 	if ip == nil {
 		return fmt.Errorf("is not a valid IP: %q", raw)

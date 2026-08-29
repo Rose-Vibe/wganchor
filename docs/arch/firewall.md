@@ -1,6 +1,6 @@
 # Firewall: default-deny on the client's public relay interface
 
-Status: implemented (`firewall.go`), `resilience-and-firewall` sprint.
+Status: implemented (`internal/firewall/firewall.go`), `resilience-and-firewall` sprint.
 Reverses `plan-tunnel-runtime.md`'s original "firewall explicitly out of
 scope" decision for the *inbound-on-the-relay-interface* case
 specifically — that decision was about not managing the VPS's own ufw
@@ -38,7 +38,7 @@ section) remains explicitly out of scope, unchanged from
 responsibility, and printed as a reminder by `wganchor install server`.
 This feature doesn't touch that.
 
-Concretely, this means the bring-up wiring (`main.go`'s `run()`) only
+Concretely, this means the bring-up wiring (`cmd/wganchor/main.go`'s `run()`) only
 ever applies the firewall scaffold and allowed-port state on the
 `client` role's path — never `server`'s. The `firewall` *subcommands*
 (`enable`/`allow`/`deny`/`disable`) remain role-agnostic on purpose (no
@@ -84,7 +84,7 @@ Rules are tagged with a per-instance comment (`wganchor-instance-<N>`)
 so they can be found and removed precisely (`nft -a list chain ...`,
 match by comment, delete by handle) without touching another instance's
 rules or anything Docker/Tailscale-owned — the same "only ever touch
-what this tool would have created" discipline `routing.go`'s reconcile
+what this tool would have created" discipline `internal/routing/routing.go`'s reconcile
 functions already follow for `ip rule`/`ip route`/`ip addr`. Because the
 chain's rules are all scoped by `iifname "wganchor<N>"`, and the base
 chain's own policy is `accept`, traffic on every other interface
@@ -147,7 +147,7 @@ reintroducing a fighting-the-operator reconcile loop:
   table and other instances' rules alone; drops the table entirely only
   if no instance's rules remain in it (mirrors `removeTemplateIfUnused`'s
   "only remove the shared thing once nothing else depends on it" pattern
-  from `lifecycle.go`).
+  from `internal/lifecycle/lifecycle.go`).
 
 ### Surviving a reboot
 
@@ -186,7 +186,7 @@ that same flushing behavior.
 The dangerous case is exactly the one found live: an operator brings up
 a brand-new interface and some already-running (or later-added)
 `0.0.0.0`-bound service becomes silently, immediately internet-reachable.
-So: when `EnsureInterface` (`iface.go`) creates a `wganchor<N>` interface
+So: when `EnsureInterface` (`internal/wireguard/iface.go`) creates a `wganchor<N>` interface
 for the first time — this requires changing `EnsureInterface`'s signature
 to return `(created bool, err error)`, since it currently only returns
 `error` — the client automatically applies the recorded firewall

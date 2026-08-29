@@ -1,17 +1,18 @@
-package main
+package lifecycle
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"wganchor/internal/config"
 )
 
 func TestConfigPathForInstance(t *testing.T) {
-	if got, want := configPathForInstance(0), "/etc/wganchor/0.json"; got != want {
+	if got, want := config.PathForInstance(0), "/etc/wganchor/0.json"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	if got, want := configPathForInstance(1), "/etc/wganchor/1.json"; got != want {
+	if got, want := config.PathForInstance(1), "/etc/wganchor/1.json"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }

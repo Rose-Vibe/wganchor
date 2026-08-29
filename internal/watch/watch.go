@@ -1,4 +1,7 @@
-package main
+// Package watch implements `wganchor watch <role>`: a self-healing
+// reconciliation loop that repairs live routing/address/rule state when
+// it drifts from the config, per docs/arch/resilience.md.
+package watch
 
 import (
 	"bufio"
@@ -12,14 +15,16 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"wganchor/internal/config"
+	"wganchor/internal/routing"
 )
 
 // shouldTrigger reports whether line — one line of `ip monitor rule`
 // output — announces the deletion of the rule this instance owns,
 // identified by requiring *both* table and priority (from
-// tableForInstance/priorityForInstance) to match: this tool's own rules
-// always carry both together, and requiring both avoids a false trigger
-// on an unrelated rule that happens to share only one of the two
+// routing.TableForInstance/PriorityForInstance) to match: this tool's own
+// rules always carry both together, and requiring both avoids a false
+// trigger on an unrelated rule that happens to share only one of the two
 // numbers. Deletion lines are prefixed "Deleted " ahead of the same
 // shape `ip rule show` itself uses (confirmed empirically against the
 // installed iproute2 build, e.g. "Deleted 20217:\tfrom 203.0.113.20
@@ -150,34 +155,34 @@ func sleepOrCancelled(ctx context.Context, d time.Duration) bool {
 // watcher is running takes effect on the next trigger, matching the
 // existing "config is the source of truth" posture) and reconciles the
 // live state for role/instance against it. ValidateConfig runs here just
-// as it does on the run() bring-up path (main.go) — loadConfig alone
-// accepts a semantically-empty config (e.g. relay_ips: null), and
+// as it does on the run() bring-up path (cmd/wganchor) — config.Load
+// alone accepts a semantically-empty config (e.g. relay_ips: null), and
 // without this check a config caught mid-edit would make the watcher
 // itself delete every currently-live address/rule for the instance: the
 // exact damage this self-healing daemon exists to prevent, not repair.
-func reconcileOnce(role string, instance int, configPath string) (ReconcileResult, error) {
-	cfg, err := loadConfig(configPath)
+func reconcileOnce(role string, instance int, configPath string) (routing.ReconcileResult, error) {
+	cfg, err := config.Load(configPath)
 	if err != nil {
-		return ReconcileResult{}, err
+		return routing.ReconcileResult{}, err
 	}
 	name := cfg.InterfaceName
 	if name == "" {
-		name = defaultInterfaceName(instance)
+		name = config.DefaultInterfaceName(instance)
 	}
-	if err := ValidateConfig(cfg, role); err != nil {
-		return ReconcileResult{}, err
+	if err := config.ValidateConfig(cfg, role); err != nil {
+		return routing.ReconcileResult{}, err
 	}
 	if role == "server" {
-		return ReconcileServerRoutes(name, cfg.RelayIPs)
+		return routing.ReconcileServerRoutes(name, cfg.RelayIPs)
 	}
-	return ReconcileClientRouting(name, cfg.RelayIPs, instance)
+	return routing.ReconcileClientRouting(name, cfg.RelayIPs, instance)
 }
 
 // describeChanges renders a ReconcileResult as the human-readable
 // changes list used in watch's log lines. table is used only for the
 // client-side entries (rules and the table default route) that are
 // inherently table-scoped; server-side host routes are not.
-func describeChanges(table int, r ReconcileResult) string {
+func describeChanges(table int, r routing.ReconcileResult) string {
 	var parts []string
 	for _, ip := range r.AddrsAdded {
 		parts = append(parts, fmt.Sprintf("added address %s/32", ip))
@@ -208,7 +213,7 @@ func describeChanges(table int, r ReconcileResult) string {
 	return strings.Join(parts, ", ")
 }
 
-// runWatch is `wganchor watch <role> --instance N`'s main loop: an
+// Run is `wganchor watch <role> --instance N`'s main loop: an
 // event-driven trigger (watchRules) plus a periodic backstop, both
 // funneled through the same reconcileOnce/logging path, serialized so
 // two triggers never reconcile concurrently against the same interface.
@@ -216,9 +221,9 @@ func describeChanges(table int, r ReconcileResult) string {
 // repairs something, except for startup/restart/event announcements,
 // which are logged unconditionally since they're operationally useful on
 // their own.
-func runWatch(role string, instance int, configPath string, interval time.Duration) error {
-	table := tableForInstance(instance)
-	priority := priorityForInstance(instance)
+func Run(role string, instance int, configPath string, interval time.Duration) error {
+	table := routing.TableForInstance(instance)
+	priority := routing.PriorityForInstance(instance)
 	prefix := fmt.Sprintf("wganchor watch (%s, instance %d)", role, instance)
 
 	ctx, cancel := context.WithCancel(context.Background())

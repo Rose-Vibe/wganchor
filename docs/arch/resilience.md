@@ -10,7 +10,7 @@ on the home machine, something — Tailscale's own log blames
 `systemd-networkd` — periodically issues a full `ip rule` flush.
 Tailscale has its own logic to detect this and restore its rules
 immediately after. wganchor does not: its bring-up
-(`server`/`client`, `iface.go`/`routing.go`) is a `Type=oneshot` systemd
+(`server`/`client`, `internal/wireguard/iface.go`/`internal/routing/routing.go`) is a `Type=oneshot` systemd
 unit that runs once and exits (see `docs/arch/config-and-lifecycle.md`).
 If the flush happens after bring-up, the interface and address stay up
 and `wg show` keeps reporting a healthy handshake (established WireGuard
@@ -67,7 +67,7 @@ independently arrived at for the default-deny firewall).
 
 The watch process does two things in a loop, both triggering exactly the
 same reconciliation the daemon already performs on every normal run
-(`ReconcileServerRoutes` / `ReconcileClientRouting`, `routing.go`) — no
+(`ReconcileServerRoutes` / `ReconcileClientRouting`, `internal/routing/routing.go`) — no
 new reconciliation logic, only a new trigger/loop harness around the
 already-reviewed, idempotent functions:
 
@@ -78,7 +78,7 @@ already-reviewed, idempotent functions:
    line. On a line indicating a rule deletion that's this instance's
    rule specifically (matching both this instance's table number *and*
    priority — see `tableForInstance`/`priorityForInstance` in
-   `routing.go` — deliberately stricter than "either": this tool's own
+   `internal/routing/routing.go` — deliberately stricter than "either": this tool's own
    rules always carry both together, and requiring both avoids a false
    trigger on an unrelated rule sharing only one of the two numbers),
    trigger a reconcile immediately. If the `ip monitor`
@@ -113,13 +113,13 @@ had to be restored) drowns in five-minute-interval "checked, all fine"
 lines.
 
 This requires `ReconcileServerRoutes`/`ReconcileClientRouting`
-(`routing.go`) to report back *what* they changed, not just
+(`internal/routing/routing.go`) to report back *what* they changed, not just
 success/failure as they do today. Proposed: change their return type
 from `error` to `(ReconcileResult, error)`, where `ReconcileResult`
 records which addresses/routes/rules were added or removed (the
 functions already compute exactly this via `diffRelayIPs` internally —
 this is a return-value change, not new diffing logic). The existing
-`server`/`client` bring-up path (`main.go`) ignores or lightly logs this
+`server`/`client` bring-up path (`cmd/wganchor/main.go`) ignores or lightly logs this
 on every normal run (nothing changes on a healthy idempotent re-run, so
 there's usually nothing to report); the watch loop uses it to decide
 whether to log at all, and what to say.

@@ -1,4 +1,4 @@
-package main
+package relay
 
 import (
 	"io"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"wganchor/internal/config"
+	"wganchor/internal/wireguard"
 )
 
 // captureStdout redirects os.Stdout for the duration of fn and returns
@@ -31,6 +33,16 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+// newTestConfig is relay's own copy of pair_test.go's helper of the same
+// name — relay and pair are separate packages, and this one small helper
+// isn't worth a shared testutil package for (see the plan's Non-goals).
+func newTestConfig() *config.Config {
+	return &config.Config{
+		PrivateKey: "unused-in-these-tests",
+		RelayIPs:   []string{"203.0.113.1"},
+	}
 }
 
 func TestAddRelayIPAppendsWhenAbsent(t *testing.T) {
@@ -97,7 +109,7 @@ func TestApplyRelayListChangePersistsWhenChanged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,7 +118,7 @@ func TestApplyRelayListChangePersistsWhenChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reloaded, err := loadConfig(path)
+	reloaded, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +131,7 @@ func TestApplyRelayListChangeNoOpWhenUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,7 +168,7 @@ func TestApplyRelayListChangeNoOpForRemoveWhenUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "0.json")
 	cfg := newTestConfig()
-	if err := persistConfig(cfg, path); err != nil {
+	if err := config.Persist(cfg, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -206,26 +218,27 @@ func TestLiveApplyRelayDeferredWhenInterfaceAbsent(t *testing.T) {
 // TestLiveApplyRelayResolvesBlankDefaultsBeforeExistenceCheck guards the
 // fix that came out of implementation review: BOTH a blank InterfaceName
 // and a zero ListenPort must resolve to their per-instance defaults
-// (resolveRuntimeDefaults) *before* interfaceExists is checked / before
-// ConfigureInterface could ever be reached — not fall through to
-// interfaceExists("") (which would spuriously report "not up yet" even
-// when a live interface exists under its real default name) and not
-// reach ConfigureInterface with a zero listen port (which would rebind
-// WireGuard to a random ephemeral port). Both fields are left blank/zero
-// together here, deliberately, since a hand-edited config omitting one
-// plausibly omits the other too, and that's exactly the population
-// implementation review flagged as under-tested. This test can't spin up
-// a real interface, so it only exercises the deferred-note path — the
-// resolution itself is asserted directly and unconditionally by
-// TestResolveRuntimeDefaultsFillsBlankAndZero (config_test.go).
+// (config.ResolveRuntimeDefaults) *before* wireguard.InterfaceExists is
+// checked / before ConfigureInterface could ever be reached — not fall
+// through to wireguard.InterfaceExists("") (which would spuriously
+// report "not up yet" even when a live interface exists under its real
+// default name) and not reach ConfigureInterface with a zero listen port
+// (which would rebind WireGuard to a random ephemeral port). Both fields
+// are left blank/zero together here, deliberately, since a hand-edited
+// config omitting one plausibly omits the other too, and that's exactly
+// the population implementation review flagged as under-tested. This
+// test can't spin up a real interface, so it only exercises the
+// deferred-note path — the resolution itself is asserted directly and
+// unconditionally by internal/config's
+// TestResolveRuntimeDefaultsFillsBlankAndZero.
 func TestLiveApplyRelayResolvesBlankDefaultsBeforeExistenceCheck(t *testing.T) {
 	const instance = 4321 // an instance number this dev/test environment has never brought up
-	if interfaceExists(defaultInterfaceName(instance)) {
-		t.Skipf("unexpected: %s already exists in this environment, can't use it as a known-absent fixture", defaultInterfaceName(instance))
+	if wireguard.InterfaceExists(config.DefaultInterfaceName(instance)) {
+		t.Skipf("unexpected: %s already exists in this environment, can't use it as a known-absent fixture", config.DefaultInterfaceName(instance))
 	}
 	cfg := newTestConfig()
-	cfg.InterfaceName = "" // must resolve to defaultInterfaceName(instance), not interfaceExists("")
-	cfg.ListenPort = 0     // must resolve to defaultListenPort(instance), never reach ConfigureInterface as 0
+	cfg.InterfaceName = "" // must resolve to config.DefaultInterfaceName(instance), not InterfaceExists("")
+	cfg.ListenPort = 0     // must resolve to config.DefaultListenPort(instance), never reach ConfigureInterface as 0
 	var err error
 	out := captureStdout(t, func() {
 		err = liveApplyRelay("server", cfg, instance)
@@ -233,7 +246,7 @@ func TestLiveApplyRelayResolvesBlankDefaultsBeforeExistenceCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error (deferred note, not a live-apply attempt against a bogus name/port), got %v", err)
 	}
-	if !strings.Contains(out, defaultInterfaceName(instance)) {
+	if !strings.Contains(out, config.DefaultInterfaceName(instance)) {
 		t.Fatalf("expected the deferred note to name the resolved default interface, got %q", out)
 	}
 }

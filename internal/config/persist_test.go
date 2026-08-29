@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"os"
@@ -14,7 +14,7 @@ func TestPersistConfigRoundTripsAndKeepsMode(t *testing.T) {
 	}
 
 	cfg := &Config{PrivateKey: "abc", PeerPublicKey: "def", RelayIPs: []string{"203.0.113.20"}}
-	if err := persistConfig(cfg, path); err != nil {
+	if err := Persist(cfg, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -26,7 +26,7 @@ func TestPersistConfigRoundTripsAndKeepsMode(t *testing.T) {
 		t.Fatalf("expected mode 0600, got %04o", perm)
 	}
 
-	got, err := loadConfig(path)
+	got, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error loading persisted config: %v", err)
 	}

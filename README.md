@@ -44,7 +44,7 @@ doc).
 ## Build
 
 ```
-go build -o wganchor .
+go build -o wganchor ./cmd/wganchor
 ```
 
 Copy the resulting `wganchor` binary to both the VPS and the home machine
