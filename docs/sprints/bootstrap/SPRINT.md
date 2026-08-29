@@ -40,7 +40,7 @@ autonomous pipeline (no further per-step check-ins) through the rest of
 standard CLAUDE.md exceptions (architectural conflict, irreversible
 consequence, systemic test failure, unsafe/destructive action).
 
-- [ ] User go-ahead received past this checkpoint (date): ____
+- [x] User go-ahead received past this checkpoint (date): 2026-08-29
 
 Check this box and fill in the date the moment the user gives the
 go-ahead — a fresh agent picking this sprint up later (after compaction,
