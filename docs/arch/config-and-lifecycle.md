@@ -33,12 +33,19 @@ Checked in this order, first match wins:
 
 1. `--config <path>` — explicit flag, always wins. Covers dev/portable use
    (e.g. `--config ./wganchor.json`) explicitly rather than implicitly.
-2. `$XDG_CONFIG_HOME/wganchor/config.json` (via Go's `os.UserConfigDir()`,
+2. `$XDG_CONFIG_HOME/wganchor/<N>.json` (via Go's `os.UserConfigDir()`,
    not a hardcoded `~/.config` — keeps a cross-platform door open at no
    cost now, even though WireGuard/NET_ADMIN realities mean any non-Linux
    port is a stretch goal, not a near-term plan).
-3. `/etc/wganchor/config.json` — the system-daemon default, used when
+3. `/etc/wganchor/<N>.json` — the system-daemon default, used when
    installed via `wganchor install` (see Lifecycle below).
+
+`N` is the instance number, per `docs/arch/wireguard.md`'s multi-instance
+naming — `0` when no `--instance` flag is given, not a specially-named
+`config.json`. There's no `--instance` flag in the bootstrap sprint (see
+that doc), so today `N` is always `0` in practice, but the path the Go
+skeleton actually looks for is `.../0.json` from the start, exactly so it
+never needs renaming later.
 
 No implicit cwd lookup (no bare `./wganchor.json` default). This tool runs
 as root, and a root-run process that silently picks up whatever config
@@ -70,9 +77,12 @@ warning, not a silent log line easy to miss on a headless box.
 Design only, not yet implemented — decided here, ahead of the Go skeleton
 work, so the subcommand surface doesn't need reworking later.
 
-- Ship a systemd unit template per role (`wganchor-server.service`,
-  `wganchor-client.service`): `Restart=on-failure`,
-  `WantedBy=multi-user.target`.
+- Ship a systemd *template* unit per role (`wganchor-server@.service`,
+  `wganchor-client@.service`), instantiated with the instance number
+  (`wganchor-server@0.service` for the default/only instance today):
+  `Restart=on-failure`, `WantedBy=multi-user.target`. Templated from the
+  start, not a flat unit name for instance 0 — see
+  `docs/arch/wireguard.md`'s multi-instance naming decision.
 - On startup, the daemon must idempotently reconcile interface/route state
   rather than assume a clean slate — a prior crash leaving `wganchor0`
   half-configured must not require manual cleanup before it can start
@@ -82,8 +92,11 @@ work, so the subcommand surface doesn't need reworking later.
 - `wganchor install [server|client]`: copies itself to
   `/usr/local/bin/wganchor` (conventional location for a non-distro-
   packaged binary — `/usr/bin` is reserved for package-manager-installed
-  files), writes the systemd unit and a default `/etc/wganchor/config.json`
-  skeleton if absent, `systemctl enable --now`.
+  files), writes the systemd unit instance and a default
+  `/etc/wganchor/0.json` skeleton if absent, `systemctl enable --now
+  wganchor-<role>@0.service`. The skeleton is written with concrete
+  values (port, interface name), not left to implicit in-code defaults —
+  see the `listen_port` note in `docs/arch/wireguard.md`.
 - `wganchor uninstall`: stops/disables the service, removes the unit;
   removing `/etc/wganchor` (config + keys) requires an explicit `--purge`
   flag, mirroring apt's remove-vs-purge split — never delete keys/config
@@ -104,9 +117,9 @@ work, so the subcommand surface doesn't need reworking later.
   execution is a later hardening pass, not a blocker.
 - Live status/control socket: deferred, `wg show` already covers basic
   status independent of this tool.
-- Multiple independent tunnel instances (`--instance <N>`, sibling config
-  files, templated `wganchor-server@.service`/`wganchor-client@.service`
-  units): naming/path shape reserved in `docs/arch/wireguard.md`, not
-  implemented. The single-instance layout above (`wganchor0`,
-  `/etc/wganchor/config.json`, flat unit names) is what `N=0`/no-flag
-  resolves to, so adding this later doesn't change anything decided here.
+- Multiple independent tunnel instances (`--instance <N>` flag itself, and
+  the `install`/`uninstall` plumbing to manage more than one at once):
+  naming/path shape reserved in `docs/arch/wireguard.md` and above (the
+  config path, port, and systemd unit are already templated on `N`), only
+  the flag and multi-instance `install`/`uninstall` UX remain unbuilt. No
+  second VPS is in scope, so there's nothing to exercise this with yet.

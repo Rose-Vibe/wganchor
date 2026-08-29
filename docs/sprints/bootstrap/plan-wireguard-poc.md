@@ -65,13 +65,16 @@ unvalidated design.
       dispatch, not a CLI framework — this is a two-subcommand tool).
 - [ ] Config file loading: JSON, using the layered lookup order from
       `docs/arch/config-and-lifecycle.md` (`--config` flag →
-      `os.UserConfigDir()` → `/etc/wganchor/config.json`; no implicit cwd
-      lookup — dev use passes `--config` explicitly). Refuses to load a
-      config file that isn't mode `0600`. Schema matches what
-      `docs/arch/wireguard.md` specifies for keys, peer endpoint, and the
-      secondary IP. Parsing only; no WireGuard calls yet, and no
-      `install`/`uninstall`/systemd work — that's later, this
-      step is just proving the lookup-and-parse path.
+      `os.UserConfigDir()/wganchor/0.json` → `/etc/wganchor/0.json`; `0`
+      because instance numbering is uniform from the start, not a
+      specially-named `config.json` — no `--instance` flag yet, so `0` is
+      the only path tried; no implicit cwd lookup — dev use passes
+      `--config` explicitly). Refuses to load a config file that isn't
+      mode `0600`. Schema matches what `docs/arch/wireguard.md` specifies
+      for keys, peer endpoint, and `relay_ips` (a list, even though this
+      deployment only has one relay IP so far). Parsing only; no
+      WireGuard calls yet, and no `install`/`uninstall`/systemd work —
+      that's later, this step is just proving the lookup-and-parse path.
 - [ ] Both subcommands currently just print the parsed config and exit —
       real interface/tunnel setup is sprint 2.
 - [ ] `gofmt` clean, `go build` and `go vet` pass.
