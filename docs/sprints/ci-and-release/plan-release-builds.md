@@ -65,10 +65,17 @@ no evidence anyone needs it yet.)
     *first* tag, `v0.1.0`'s auto-generated notes would otherwise be the
     entire commit history. `release.header` in `.goreleaser.yaml` applies
     to *every* release, not just one tag, so don't put permanent,
-    v0.1.0-specific prose there — instead pass a one-off `--release-header
-    <file>` on the CLI invocation for the `v0.1.0` tag only (the
-    `release.yml` workflow's `goreleaser release --clean` step can stay
-    generic; this is a one-time manual/local step for the first tag).
+    v0.1.0-specific prose there. A one-off `--release-header <file>` on a
+    local `goreleaser release` invocation doesn't work either: pushing
+    the `v0.1.0` tag triggers `release.yml`'s CI job immediately, which
+    publishes the Release with the generic, filtered changelog alone
+    before any local run could get there first — and a local run
+    afterward would just hit an already-existing Release. Simplest
+    correct mechanism: let CI publish `v0.1.0` exactly as it would any
+    other tag, then once it's live, `gh release edit v0.1.0 --notes-file
+    <file>` to prepend a short hand-written paragraph ahead of the
+    filtered changelog GoReleaser already generated — a plain edit of
+    the published Release's notes, not a second GoReleaser invocation.
     Subsequent tags rely on the filtered auto-changelog alone, with no
     header override.
 - **Split `ci.yml` into a reusable `_checks.yml` + a thin `ci.yml`
@@ -186,7 +193,9 @@ no evidence anyone needs it yet.)
   rule.
 - Live-verified: pushing an actual tag (`v0.1.0`, the project's first
   release) produces a GitHub Release with two platform archives and a
-  `checksums.txt` attached, with a short hand-written header rather than
-  the full raw commit history as notes, and `go install
+  `checksums.txt` attached, with `gh release edit v0.1.0 --notes-file
+  <file>` applied afterward so the published notes read as a short
+  hand-written paragraph followed by the filtered changelog, not the
+  full raw commit history on its own, and `go install
   github.com/Rose-Vibe/wganchor/cmd/wganchor@v0.1.0` resolves cleanly
   against that tag (ties back to `plan-module-path.md`'s exit criterion).

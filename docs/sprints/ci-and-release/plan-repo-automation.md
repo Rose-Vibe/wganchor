@@ -261,10 +261,61 @@ an upstream account compromise could repoint; a SHA is not), and it's
 what makes Dependabot actually open patch/minor PRs that flow through
 auto-merge — which is also the only way to get a same-day *positive*
 live-verification of the auto-merge path (see Exit criteria) rather than
-waiting for a real bump to eventually happen. Resolve each SHA at
-implementation time (`git ls-remote https://github.com/<owner>/<repo>
-refs/tags/<version>`, or `gh api repos/<owner>/<repo>/git/refs/tags/<version>`)
-rather than hardcoding one here that could drift before implementation.
+waiting for a real bump to eventually happen.
+
+**Resolution recipe — must peel annotated tags, not just read the ref.**
+A tag can be lightweight (the ref points straight at a commit) or
+annotated (the ref points at a tag *object*, which itself points at a
+commit) — `uses: owner/repo@<sha>` requires the commit SHA; passing an
+annotated tag's object SHA fails at workflow-run time with "unable to
+find version". Confirmed live: `golangci/golangci-lint-action@v9` is
+annotated (its ref resolves to tag-object `db9de0f...`, not the commit;
+the real commit is `ba0d7d2...`). The naive `git ls-remote
+refs/tags/<version>` / `gh api repos/<o>/<r>/git/refs/tags/<version>`
+recipe this plan originally specified returns exactly the wrong SHA for
+an annotated tag, so always peel regardless of which kind a given tag
+turns out to be:
+
+```
+ref=$(gh api repos/$OWNER/$REPO/git/ref/tags/$TAG --jq .object.sha)
+typ=$(gh api repos/$OWNER/$REPO/git/ref/tags/$TAG --jq .object.type)
+[ "$typ" = tag ] && ref=$(gh api repos/$OWNER/$REPO/git/tags/$ref --jq .object.sha)
+gh api repos/$OWNER/$REPO/commits/$ref --jq .sha   # must succeed and print a 40-hex commit SHA — that's the one `uses:` gets
+```
+
+(`git ls-remote`'s equivalent is reading the `^{}`-suffixed peeled line
+for the tag, never the plain one.) Use the full 40-character SHA in
+`uses:`, never an abbreviation. The trailing `# vX.Y.Z` comment must be
+the full semver tag the floating major currently resolves to (e.g.
+`# v9.1.4`, not `# v9`) — list candidate tags with `gh api
+repos/$OWNER/$REPO/git/matching-refs/tags/$MAJOR.`, pick the highest,
+and resolve *that* (peeled, as above) for the actual pin. Comment and
+pin must agree exactly — that's the form Dependabot expects when it
+rewrites both together on a future bump.
+
+**Expect the first Dependabot run to open mostly major-bump PRs, not
+patch/minor ones** — checked live, every one of these five Actions is
+currently a major version behind upstream (e.g. `checkout` v5→v7,
+`setup-go` v6→v7, `goreleaser-action` v6→v7, `fetch-metadata` v2→v3).
+Auto-merge correctly leaves all of those for manual review, so don't
+read an unmerged first batch as auto-merge failing — it's working as
+designed. This also means the same-day positive-path test (see Exit
+criteria) is nearly free without any artificial downgrade: check what
+`golangci-lint-action`'s `v9` currently resolves to before pinning it;
+if it's already behind the latest `v9.x.y` patch, the very first
+Dependabot run should produce a real patch/minor PR that auto-merges on
+its own.
+
+**Optional, one-time complement — not required**: `gh api
+repos/Rose-Vibe/wganchor/actions/permissions` currently shows
+`sha_pinning_required: false`. Flipping it (`gh api -X PUT
+repos/Rose-Vibe/wganchor/actions/permissions -F enabled=true -f
+allowed_actions=all -F sha_pinning_required=true`) turns a future
+floating-tag regression into a workflow-parse failure instead of
+something only a code review would catch — a natural complement to the
+user's re-pinning decision. Local `uses: ./.github/workflows/_checks.yml`
+references are unaffected by this policy. Include it or leave it for
+later, at the implementer's discretion.
 
 ### 4. Live verification on GitHub (not done until this passes)
 
