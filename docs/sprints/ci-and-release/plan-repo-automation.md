@@ -31,14 +31,31 @@ get auto-merged, not anyone else's? The first draft of this plan answered
    workflow *as checked out from the PR*). The required-status-check
    ruleset (below) is the second layer: it applies to every merge,
    regardless of actor. `dependabot/fetch-metadata`'s own default
-   behavior is the third: it only populates outputs, and succeeds, when
-   the PR's author *and every commit in it* are Dependabot's — otherwise
-   it fails closed.
-2. The `if:` check is still worth keeping — as hygiene (skip noisy
-   failed/no-op runs for the common case, catch a human pushing a commit
-   directly onto a Dependabot branch triggering a `synchronize` event
-   under their own identity) — not as the thing doing the actual
-   security work. Rewritten below with this corrected.
+   behavior is the third, **corrected during implementation review of
+   an overstated claim in an earlier draft of this section**: at
+   `fetch-metadata`'s pinned version, it verifies the PR's author *and
+   the PR's first commit only* (author plus a verified signature) — not
+   every commit in the PR. It fails closed for anything that doesn't
+   match that.
+2. Because of that correction, **the `if:` check is not purely hygiene —
+   it does real security work for one specific case**: a write-access
+   collaborator pushing a further commit onto an already-open Dependabot
+   PR branch (fetch-metadata's first-commit-only check wouldn't catch
+   this; the job-level `if:` does, since that push's `synchronize` event
+   carries the human's own identity as `github.actor`, not
+   `dependabot[bot]`). It's still hygiene for the ordinary non-Dependabot
+   case (skips noisy failed/no-op runs) — just not *only* hygiene.
+   **Residual gap, not exploitable today, worth knowing**: if
+   auto-merge was already enabled on a PR by an earlier, legitimately
+   gated run, a later human-pushed commit's `synchronize` event is
+   skipped by the `if:`, but GitHub's own auto-merge (once enabled)
+   doesn't require this workflow to run again — it merges on its own
+   once `checks / test` passes, regardless of who pushed last. Not a
+   real exposure on this repo today (its only collaborator is the admin,
+   who could merge directly anyway, and a fork contributor can't push to
+   an in-repo branch), but relevant the day a second collaborator without
+   admin bypass exists, and relevant to the same "required-review count
+   above 0" caveat already noted in section 2 below.
 
 **Invariant that must never be violated, because it's exactly what would
 reopen the hole above**: this workflow's trigger stays `pull_request`,

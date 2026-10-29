@@ -1,0 +1,50 @@
+name: Auto-merge Dependabot PRs
+
+# Trigger is deliberately the plain `pull_request` event, never its
+# `_target` variant. For a plain pull_request run on a fork PR, GitHub
+# forces GITHUB_TOKEN to be read-only regardless of the `permissions:`
+# block below, which is what actually stops a fork PR from auto-merging
+# itself even if it edited this workflow file to delete the `if:` gate on
+# the job below. The `_target` variant would hand a fork PR a privileged
+# token while still running that PR's own code — never switch to it here.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # The fork-PR boundary is the forced read-only token above, not this
+    # line (see note above) — but this check does do real work for a
+    # different case: fetch-metadata below only verifies the PR's author
+    # and its first commit, not every commit, so a write-access human
+    # pushing a further commit onto an already-open Dependabot branch is
+    # caught here, by the triggering actor not being dependabot[bot].
+    # Checking both the triggering actor and the PR's own author is free
+    # and stronger than either alone.
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
+        id: meta
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Left at their secure defaults deliberately: fetch-metadata
+          # only populates outputs (and this job only proceeds) when the
+          # PR's author is Dependabot's AND its first commit is
+          # Dependabot's with a verified signature — not every commit in
+          # the PR. The job-level `if:` above covers the gap for a later
+          # commit pushed by someone else.
+          # skip-verification: false
+          # skip-commit-verification: false
+      - name: Auto-merge patch and minor updates
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
