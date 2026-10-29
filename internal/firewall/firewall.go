@@ -8,9 +8,10 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"wganchor/internal/config"
-	"wganchor/internal/routing"
-	"wganchor/internal/sysexec"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/routing"
+	"github.com/Rose-Vibe/wganchor/internal/sysexec"
 )
 
 // firewallTable is the single, dedicated nftables table this tool ever

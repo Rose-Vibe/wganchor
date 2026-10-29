@@ -13,8 +13,9 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"wganchor/internal/config"
-	"wganchor/internal/wireguard"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/wireguard"
 )
 
 // wgKeyLen is the raw byte length of a WireGuard Curve25519 key (private

@@ -4,7 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"wganchor/internal/routing"
+
+	"github.com/Rose-Vibe/wganchor/internal/routing"
 )
 
 // TestReconcileOnceRejectsInvalidConfigWithoutReconciling guards the

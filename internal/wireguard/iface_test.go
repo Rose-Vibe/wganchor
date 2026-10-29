@@ -3,7 +3,8 @@ package wireguard
 import (
 	"reflect"
 	"testing"
-	"wganchor/internal/config"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
 )
 
 func TestAllowedIPsForRoleClientIsWideOpen(t *testing.T) {

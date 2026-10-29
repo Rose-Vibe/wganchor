@@ -6,8 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"wganchor/internal/config"
-	"wganchor/internal/wireguard"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/wireguard"
 )
 
 // captureStdout redirects os.Stdout for the duration of fn and returns

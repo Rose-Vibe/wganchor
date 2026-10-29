@@ -13,11 +13,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"wganchor/internal/config"
-	"wganchor/internal/firewall"
-	"wganchor/internal/routing"
-	"wganchor/internal/sysexec"
-	"wganchor/internal/wireguard"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/firewall"
+	"github.com/Rose-Vibe/wganchor/internal/routing"
+	"github.com/Rose-Vibe/wganchor/internal/sysexec"
+	"github.com/Rose-Vibe/wganchor/internal/wireguard"
 )
 
 const (

@@ -9,14 +9,15 @@ import (
 	"os"
 	"strings"
 	"time"
-	"wganchor/internal/config"
-	"wganchor/internal/firewall"
-	"wganchor/internal/lifecycle"
-	"wganchor/internal/pair"
-	"wganchor/internal/relay"
-	"wganchor/internal/routing"
-	"wganchor/internal/watch"
-	"wganchor/internal/wireguard"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/firewall"
+	"github.com/Rose-Vibe/wganchor/internal/lifecycle"
+	"github.com/Rose-Vibe/wganchor/internal/pair"
+	"github.com/Rose-Vibe/wganchor/internal/relay"
+	"github.com/Rose-Vibe/wganchor/internal/routing"
+	"github.com/Rose-Vibe/wganchor/internal/watch"
+	"github.com/Rose-Vibe/wganchor/internal/wireguard"
 )
 
 func main() {

@@ -8,8 +8,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"wganchor/internal/config"
-	"wganchor/internal/sysexec"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/sysexec"
 )
 
 // TableForInstance and PriorityForInstance derive the client-side policy

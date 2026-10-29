@@ -6,9 +6,10 @@ package relay
 import (
 	"fmt"
 	"os"
-	"wganchor/internal/config"
-	"wganchor/internal/routing"
-	"wganchor/internal/wireguard"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/routing"
+	"github.com/Rose-Vibe/wganchor/internal/wireguard"
 )
 
 // addRelayIP appends ip to list if not already present, reporting whether

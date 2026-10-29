@@ -3,8 +3,8 @@
 package wireguard
 
 import (
-	"wganchor/internal/config"
-	"wganchor/internal/sysexec"
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/sysexec"
 )
 
 // GenerateKeypair shells out to `wg genkey` / `wg pubkey`. The private key

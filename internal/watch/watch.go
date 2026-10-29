@@ -15,8 +15,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"wganchor/internal/config"
-	"wganchor/internal/routing"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/routing"
 )
 
 // shouldTrigger reports whether line — one line of `ip monitor rule`

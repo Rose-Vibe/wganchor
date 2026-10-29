@@ -44,11 +44,23 @@ doc).
 ## Build
 
 ```
-go build -o wganchor ./cmd/wganchor
+CGO_ENABLED=0 go build -o wganchor ./cmd/wganchor
 ```
 
 Copy the resulting `wganchor` binary to both the VPS and the home machine
 (or build separately on each — it's a single static binary either way).
+`CGO_ENABLED=0` is required to get a genuinely static binary: `net` pulls
+in cgo's resolver whenever a C toolchain is present, which otherwise
+silently produces a dynamically linked binary instead.
+
+Alternatively, install directly from source without a local clone:
+
+```
+CGO_ENABLED=0 go install github.com/Rose-Vibe/wganchor/cmd/wganchor@latest
+```
+
+This resolves a tagged release once one exists, or the latest commit on
+`main` otherwise.
 
 ### Linting
 

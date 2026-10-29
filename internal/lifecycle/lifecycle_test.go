@@ -5,7 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"wganchor/internal/config"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
 )
 
 func TestConfigPathForInstance(t *testing.T) {

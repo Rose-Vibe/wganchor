@@ -3,8 +3,9 @@ package wireguard
 import (
 	"fmt"
 	"strings"
-	"wganchor/internal/config"
-	"wganchor/internal/sysexec"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/sysexec"
 )
 
 // AllowedIPsForRole computes the WireGuard AllowedIPs list for this side's

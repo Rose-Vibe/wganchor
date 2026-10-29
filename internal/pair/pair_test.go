@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"wganchor/internal/config"
-	"wganchor/internal/wireguard"
+
+	"github.com/Rose-Vibe/wganchor/internal/config"
+	"github.com/Rose-Vibe/wganchor/internal/wireguard"
 )
 
 // Real keys generated via `wg genkey`/`wg pubkey` for this test file —
