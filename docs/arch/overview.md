@@ -1,5 +1,10 @@
 # Overview: Network Design
 
+> IPs throughout `docs/` are placeholders from RFC 5737's TEST-NET-3 block
+> (`203.0.113.0/24`), not the real deployment's addresses: `203.0.113.10`
+> stands in for the VPS primary/management IP, `203.0.113.20` for the VPS
+> secondary/relay IP, wherever either appears.
+
 ## Roles (confirmed 2026-08-28)
 
 - **VPS primary IP** `203.0.113.10` — SSH/management only. Never relayed.
