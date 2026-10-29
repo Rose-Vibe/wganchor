@@ -1,0 +1,36 @@
+version: 2
+
+project_name: wganchor
+
+builds:
+  - main: ./cmd/wganchor
+    binary: wganchor
+    goos: [linux]
+    goarch: [amd64, arm64]
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+release:
+  prerelease: auto
+
+changelog:
+  filters:
+    exclude:
+      - '^docs:'
+      - '^plan:'
+      - '^ci:'
+      - 'close out'

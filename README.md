@@ -62,6 +62,23 @@ CGO_ENABLED=0 go install github.com/Rose-Vibe/wganchor/cmd/wganchor@latest
 This resolves a tagged release once one exists, or the latest commit on
 `main` otherwise.
 
+### Download a release
+
+Prebuilt `linux/amd64` and `linux/arm64` binaries are attached to each
+[tagged release](https://github.com/Rose-Vibe/wganchor/releases) as
+`wganchor_<version>_linux_amd64.tar.gz` / `..._linux_arm64.tar.gz`,
+alongside a `checksums.txt` covering both. Verify before extracting:
+
+```
+sha256sum --ignore-missing --check checksums.txt
+```
+
+**Release tags are never moved, deleted, or re-created once pushed** —
+the Go module proxy and checksum database cache a tag's resolved commit
+on first fetch, so moving one afterward would break `go install
+...@<tag>` for anyone who already fetched it. A bad release is fixed
+forward with a new patch tag, never by rewriting the old one.
+
 ### Linting
 
 CI runs [`golangci-lint`](https://golangci-lint.run/) (config:
